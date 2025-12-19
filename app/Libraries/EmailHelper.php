@@ -214,8 +214,6 @@ class EmailHelper
                     <p>Dear {$name},</p>
                     <p>Thank you for registering with Fortune Technologies. Please verify your email address by clicking the button below:</p>
                     <p style='text-align: center;'><a href='{$verificationUrl}' class='button'>Verify Email</a></p>
-                    <p>Or copy and paste this link into your browser:</p>
-                    <p>{$verificationUrl}</p>
                     <p>This link will expire in 24 hours.</p>
                     <p>Best regards,<br>Fortune Technologies Team</p>
                 </div>
@@ -256,8 +254,6 @@ class EmailHelper
                     <p>Dear {$name},</p>
                     <p>We received a request to reset your password. Click the button below to reset it:</p>
                     <p style='text-align: center;'><a href='{$resetUrl}' class='button'>Reset Password</a></p>
-                    <p>Or copy and paste this link into your browser:</p>
-                    <p>{$resetUrl}</p>
                     <p>This link will expire in 1 hour. If you didn't request this, please ignore this email.</p>
                     <p>Best regards,<br>Fortune Technologies Team</p>
                 </div>
