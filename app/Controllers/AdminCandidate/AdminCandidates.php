@@ -18,7 +18,7 @@ class AdminCandidates extends BaseController
 
     /**
      * @OA\Get(
-     *     path="/admin/candidates",
+     *     path="/api/admin/candidates",
      *     tags={"Admin - Candidates"},
      *     summary="Get all candidates with filters and pagination",
      *     security={{"bearerAuth":{}}},
@@ -35,8 +35,8 @@ class AdminCandidates extends BaseController
     {
         try {
             // Get pagination parameters
-            $page = (int) ($this->request->getGet('page') ?? 1);
-            $limit = (int) ($this->request->getGet('limit') ?? 20);
+            $page = max(1, (int) ($this->request->getGet('page') ?? 1));
+            $limit = max(1, min(100, (int) ($this->request->getGet('limit') ?? 20)));
             $skip = ($page - 1) * $limit;
             
             // Get filters
@@ -47,209 +47,106 @@ class AdminCandidates extends BaseController
             $search = $this->request->getGet('search');
             $hasResume = $this->request->getGet('hasResume');
             $sortBy = $this->request->getGet('sortBy') ?? 'createdAt';
-            $sortOrder = $this->request->getGet('sortOrder') ?? 'desc';
+            $sortOrder = strtoupper($this->request->getGet('sortOrder') ?? 'DESC');
             
-            // Use Query Builder for complex queries with multiple joins
+            // Validate sort order
+            if (!in_array($sortOrder, ['ASC', 'DESC'])) {
+                $sortOrder = 'DESC';
+            }
+            
+            // Use Query Builder
             $db = \Config\Database::connect();
             $builder = $db->table('candidate_profiles');
             
-            // Select all candidate_profiles columns
+            // Select candidate_profiles columns
             $builder->select('candidate_profiles.*');
             
-            // Open to work filter (matching Node.js)
+            // Apply filters
             if ($openToWork !== null) {
-                $openToWorkValue = $openToWork === 'true' || $openToWork === true || $openToWork === '1' || $openToWork === 1;
-                $builder->where('candidate_profiles.openToWork', $openToWorkValue);
+                $openToWorkValue = filter_var($openToWork, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+                if ($openToWorkValue !== null) {
+                    $builder->where('candidate_profiles.openToWork', $openToWorkValue);
+                }
             }
             
-            // Location filter (matching Node.js)
             if ($location) {
-                $builder->like('candidate_profiles.location', $location);
+                $builder->like('candidate_profiles.location', $location, 'both');
             }
             
-            // Has resume filter (matching Node.js)
             if ($hasResume !== null) {
-                if ($hasResume === 'true' || $hasResume === true || $hasResume === '1' || $hasResume === 1) {
+                $hasResumeValue = filter_var($hasResume, FILTER_VALIDATE_BOOLEAN);
+                if ($hasResumeValue) {
                     $builder->where('candidate_profiles.resumeUrl IS NOT NULL');
                 } else {
                     $builder->where('candidate_profiles.resumeUrl IS NULL');
                 }
             }
             
-            // Search filter - search in user fields (matching Node.js)
+            // Search filter
             $hasSearchJoin = false;
             if ($search) {
                 $builder->join('users', 'users.id = candidate_profiles.userId', 'inner');
                 $hasSearchJoin = true;
                 $builder->groupStart()
-                    ->like('users.firstName', $search)
-                    ->orLike('users.lastName', $search)
-                    ->orLike('users.email', $search)
-                    ->orLike('candidate_profiles.title', $search)
-                    ->orLike('candidate_profiles.location', $search)
+                    ->like('users.firstName', $search, 'both')
+                    ->orLike('users.lastName', $search, 'both')
+                    ->orLike('users.email', $search, 'both')
+                    ->orLike('candidate_profiles.title', $search, 'both')
+                    ->orLike('candidate_profiles.location', $search, 'both')
                     ->groupEnd();
             }
             
-            // Domain filter (matching Node.js - requires join, uses candidateId)
+            // Domain filter
             if ($domainId) {
                 $builder->join('candidate_domains', 'candidate_domains.candidateId = candidate_profiles.id', 'inner')
                     ->where('candidate_domains.domainId', $domainId);
             }
             
-            // Skill filter (matching Node.js - requires join, uses candidateId)
+            // Skill filter
             if ($skillId) {
                 $builder->join('candidate_skills', 'candidate_skills.candidateId = candidate_profiles.id', 'inner')
                     ->where('candidate_skills.skillId', $skillId);
             }
             
-            // Group by to avoid duplicates from joins
+            // Group by to avoid duplicates
             if ($domainId || $skillId) {
                 $builder->groupBy('candidate_profiles.id');
             }
             
-            // Build count query separately to avoid affecting main query
-            $countBuilder = $db->table('candidate_profiles');
-            if ($openToWork !== null) {
-                $openToWorkValue = $openToWork === 'true' || $openToWork === true || $openToWork === '1' || $openToWork === 1;
-                $countBuilder->where('candidate_profiles.openToWork', $openToWorkValue);
-            }
-            if ($location) {
-                $countBuilder->like('candidate_profiles.location', $location);
-            }
-            if ($hasResume !== null) {
-                if ($hasResume === 'true' || $hasResume === true || $hasResume === '1' || $hasResume === 1) {
-                    $countBuilder->where('candidate_profiles.resumeUrl IS NOT NULL');
-                } else {
-                    $countBuilder->where('candidate_profiles.resumeUrl IS NULL');
-                }
-            }
-            if ($search) {
-                $countBuilder->join('users', 'users.id = candidate_profiles.userId', 'inner')
-                    ->groupStart()
-                    ->like('users.firstName', $search)
-                    ->orLike('users.lastName', $search)
-                    ->orLike('users.email', $search)
-                    ->orLike('candidate_profiles.title', $search)
-                    ->orLike('candidate_profiles.location', $search)
-                    ->groupEnd();
-            }
-            if ($domainId) {
-                $countBuilder->join('candidate_domains', 'candidate_domains.candidateId = candidate_profiles.id', 'inner')
-                    ->where('candidate_domains.domainId', $domainId);
-            }
-            if ($skillId) {
-                $countBuilder->join('candidate_skills', 'candidate_skills.candidateId = candidate_profiles.id', 'inner')
-                    ->where('candidate_skills.skillId', $skillId);
-            }
-            if ($domainId || $skillId) {
-                $countBuilder->groupBy('candidate_profiles.id');
-            }
+            // Clone builder for count
+            $countBuilder = clone $builder;
             $total = $countBuilder->countAllResults(false);
             
-            // Apply sorting (matching Node.js)
-            // If sorting by firstName or lastName, need to join users table
-            if ($sortBy === 'firstName' || $sortBy === 'lastName') {
+            // Apply sorting
+            if (in_array($sortBy, ['firstName', 'lastName'])) {
                 if (!$hasSearchJoin) {
                     $builder->join('users', 'users.id = candidate_profiles.userId', 'inner');
                 }
-                $builder->orderBy('users.' . $sortBy, strtoupper($sortOrder));
+                $builder->orderBy('users.' . $sortBy, $sortOrder);
             } else {
-                $builder->orderBy('candidate_profiles.' . $sortBy, strtoupper($sortOrder));
+                $allowedSortFields = ['createdAt', 'updatedAt', 'title', 'location', 'openToWork'];
+                if (in_array($sortBy, $allowedSortFields)) {
+                    $builder->orderBy('candidate_profiles.' . $sortBy, $sortOrder);
+                } else {
+                    $builder->orderBy('candidate_profiles.createdAt', 'DESC');
+                }
             }
             
             // Get paginated results
             $candidates = $builder->limit($limit, $skip)->get()->getResultArray();
             
-            // Format candidates with user, skills, domains (matching Node.js)
-            $userModel = new \App\Models\User();
-            $candidateSkillModel = new \App\Models\CandidateSkill();
-            $candidateDomainModel = new \App\Models\CandidateDomain();
-            $skillModel = new \App\Models\Skill();
-            $domainModel = new \App\Models\Domain();
+            // Format candidates
+            $formattedCandidates = $this->formatCandidates($candidates);
             
-            $formattedCandidates = [];
-            foreach ($candidates as $candidate) {
-                // Skip candidates without userId
-                if (empty($candidate['userId'])) {
-                    continue;
-                }
-                
-                $formattedCandidate = $candidate;
-                
-                // Get user data (matching Node.js - includes emailVerified, status, createdAt)
-                $user = $userModel->select('id, email, firstName, lastName, phone, avatar, emailVerified, status, createdAt')
-                    ->find($candidate['userId']);
-                
-                // Skip if user not found (orphaned candidate profile)
-                if (!$user) {
-                    continue;
-                }
-                
-                $formattedCandidate['user'] = $user;
-                
-                // Get skills (matching Node.js - limit to 10, wrapped in { skill: ... })
-                $candidateSkills = $candidateSkillModel->where('candidateId', $candidate['id'])
-                    ->orderBy('createdAt', 'DESC')
-                    ->limit(10)
-                    ->findAll();
-                $skills = [];
-                foreach ($candidateSkills as $cs) {
-                    $skill = $skillModel->find($cs['skillId']);
-                    if ($skill) {
-                        $skills[] = [
-                            'id' => $cs['id'],
-                            'candidateId' => $cs['candidateId'],
-                            'skillId' => $cs['skillId'],
-                            'level' => $cs['level'] ?? null,
-                            'yearsOfExp' => $cs['yearsOfExp'] ?? null,
-                            'createdAt' => $cs['createdAt'] ?? null,
-                            'skill' => $skill
-                        ];
-                    }
-                }
-                $formattedCandidate['skills'] = $skills;
-                
-                // Get domains (matching Node.js - wrapped in { domain: ... })
-                $candidateDomains = $candidateDomainModel->where('candidateId', $candidate['id'])->findAll();
-                $domains = [];
-                foreach ($candidateDomains as $cd) {
-                    $domain = $domainModel->find($cd['domainId']);
-                    if ($domain) {
-                        $domains[] = [
-                            'id' => $cd['id'],
-                            'candidateId' => $cd['candidateId'],
-                            'domainId' => $cd['domainId'],
-                            'isPrimary' => $cd['isPrimary'] ?? false,
-                            'createdAt' => $cd['createdAt'] ?? null,
-                            'domain' => $domain
-                        ];
-                    }
-                }
-                $formattedCandidate['domains'] = $domains;
-                
-                // Get _count for educations, experiences, certifications (matching Node.js)
-                $educationModel = new \App\Models\Education();
-                $experienceModel = new \App\Models\Experience();
-                $certificationModel = new \App\Models\Certification();
-                
-                $formattedCandidate['_count'] = [
-                    'educations' => (int) $educationModel->where('candidateId', $candidate['id'])->countAllResults(false),
-                    'experiences' => (int) $experienceModel->where('candidateId', $candidate['id'])->countAllResults(false),
-                    'certifications' => (int) $certificationModel->where('candidateId', $candidate['id'])->countAllResults(false)
-                ];
-                
-                $formattedCandidates[] = $formattedCandidate;
-            }
-            
-            // Node.js returns { success: true, message: '...', data: { candidates, pagination } } (matching Node.js)
             $totalPages = (int) ceil($total / $limit);
+            
             return $this->respond([
                 'success' => true,
                 'message' => 'Candidates retrieved successfully',
                 'data' => [
                     'candidates' => $formattedCandidates,
                     'pagination' => [
-                        'total' => $total,
+                        'total' => (int) $total,
                         'page' => $page,
                         'limit' => $limit,
                         'totalPages' => $totalPages,
@@ -259,10 +156,11 @@ class AdminCandidates extends BaseController
                 ]
             ]);
         } catch (\Exception $e) {
+            log_message('error', 'Get candidates error: ' . $e->getMessage());
             return $this->respond([
                 'success' => false,
                 'message' => 'Failed to retrieve candidates',
-                'data' => []
+                'data' => null
             ], 500);
         }
     }
@@ -273,34 +171,24 @@ class AdminCandidates extends BaseController
      *     tags={"Admin - Candidates"},
      *     summary="Get candidate statistics for dashboard",
      *     security={{"bearerAuth":{}}},
-     *     @OA\Response(response="200", description="Statistics retrieved")
+     *     @OA\Response(response="200", description="Statistics retrieved successfully")
      * )
      */
     public function getCandidateStats()
     {
         try {
             $candidateModel = new CandidateProfile();
-            $userModel = new \App\Models\User();
-            $candidateSkillModel = new \App\Models\CandidateSkill();
-            $candidateDomainModel = new \App\Models\CandidateDomain();
-            $skillModel = new \App\Models\Skill();
-            $domainModel = new \App\Models\Domain();
-            $educationModel = new \App\Models\Education();
-            $experienceModel = new \App\Models\Experience();
+            $db = \Config\Database::connect();
             
-            // Calculate stats (matching Node.js)
+            // Total candidates
             $totalCandidates = $candidateModel->countAllResults(false);
             
             // Active candidates (logged in within 30 days)
             $thirtyDaysAgo = date('Y-m-d H:i:s', strtotime('-30 days'));
-            // Use Query Builder for more control
-            $db = \Config\Database::connect();
             $activeCandidates = $db->table('candidate_profiles')
-                ->select('candidate_profiles.id')
                 ->join('users', 'users.id = candidate_profiles.userId', 'inner')
                 ->where('users.lastLoginAt >=', $thirtyDaysAgo)
-                ->distinct()
-                ->countAllResults(false);
+                ->countAllResults();
             
             // Candidates with resume
             $candidatesWithResume = $candidateModel->where('resumeUrl IS NOT NULL')
@@ -315,22 +203,23 @@ class AdminCandidates extends BaseController
             $recentCandidates = $candidateModel->where('createdAt >=', $sevenDaysAgo)
                 ->countAllResults(false);
             
-            // Top skills (matching Node.js - use groupBy approach)
-            $db = \Config\Database::connect();
+            // Top skills
             $topSkillsRaw = $db->table('candidate_skills')
-                ->select('skillId, COUNT(*) as _count')
+                ->select('skillId, COUNT(*) as count')
                 ->groupBy('skillId')
-                ->orderBy('_count', 'DESC')
+                ->orderBy('count', 'DESC')
                 ->limit(10)
                 ->get()
                 ->getResultArray();
             
-            // Enrich with skill names (matching Node.js)
             $skillIds = array_column($topSkillsRaw, 'skillId');
-            $skills = $skillModel->whereIn('id', $skillIds)->findAll();
             $skillsMap = [];
-            foreach ($skills as $skill) {
-                $skillsMap[$skill['id']] = $skill;
+            if (!empty($skillIds)) {
+                $skillModel = new \App\Models\Skill();
+                $skills = $skillModel->whereIn('id', $skillIds)->findAll();
+                foreach ($skills as $skill) {
+                    $skillsMap[$skill['id']] = $skill;
+                }
             }
             
             $topSkills = [];
@@ -339,25 +228,27 @@ class AdminCandidates extends BaseController
                 $topSkills[] = [
                     'skillId' => $stat['skillId'],
                     'skillName' => $skill ? $skill['name'] : 'Unknown',
-                    'count' => (int) $stat['_count']
+                    'count' => (int) $stat['count']
                 ];
             }
             
-            // Top domains (matching Node.js - use groupBy approach)
+            // Top domains
             $topDomainsRaw = $db->table('candidate_domains')
-                ->select('domainId, COUNT(*) as _count')
+                ->select('domainId, COUNT(*) as count')
                 ->groupBy('domainId')
-                ->orderBy('_count', 'DESC')
+                ->orderBy('count', 'DESC')
                 ->limit(10)
                 ->get()
                 ->getResultArray();
             
-            // Enrich with domain names (matching Node.js)
             $domainIds = array_column($topDomainsRaw, 'domainId');
-            $domains = $domainModel->whereIn('id', $domainIds)->findAll();
             $domainsMap = [];
-            foreach ($domains as $domain) {
-                $domainsMap[$domain['id']] = $domain;
+            if (!empty($domainIds)) {
+                $domainModel = new \App\Models\Domain();
+                $domains = $domainModel->whereIn('id', $domainIds)->findAll();
+                foreach ($domains as $domain) {
+                    $domainsMap[$domain['id']] = $domain;
+                }
             }
             
             $topDomains = [];
@@ -366,31 +257,31 @@ class AdminCandidates extends BaseController
                 $topDomains[] = [
                     'domainId' => $stat['domainId'],
                     'domainName' => $domain ? $domain['name'] : 'Unknown',
-                    'count' => (int) $stat['_count']
+                    'count' => (int) $stat['count']
                 ];
             }
             
-            // Node.js returns { success: true, message: '...', data: { overview: {...}, topSkills: [...], topDomains: [...] } }
             return $this->respond([
                 'success' => true,
                 'message' => 'Statistics retrieved successfully',
                 'data' => [
                     'overview' => [
-                        'totalCandidates' => $totalCandidates,
-                        'activeCandidates' => $activeCandidates,
-                        'candidatesWithResume' => $candidatesWithResume,
-                        'candidatesOpenToWork' => $candidatesOpenToWork,
-                        'recentCandidates' => $recentCandidates
+                        'totalCandidates' => (int) $totalCandidates,
+                        'activeCandidates' => (int) $activeCandidates,
+                        'candidatesWithResume' => (int) $candidatesWithResume,
+                        'candidatesOpenToWork' => (int) $candidatesOpenToWork,
+                        'recentCandidates' => (int) $recentCandidates
                     ],
                     'topSkills' => $topSkills,
                     'topDomains' => $topDomains
                 ]
             ]);
         } catch (\Exception $e) {
+            log_message('error', 'Get stats error: ' . $e->getMessage());
             return $this->respond([
                 'success' => false,
                 'message' => 'Failed to retrieve statistics',
-                'data' => []
+                'data' => null
             ], 500);
         }
     }
@@ -402,18 +293,22 @@ class AdminCandidates extends BaseController
      *     summary="Get single candidate full details by profile ID",
      *     security={{"bearerAuth":{}}},
      *     @OA\Parameter(name="candidateProfileId", in="path", required=true, @OA\Schema(type="string")),
-     *     @OA\Response(response="200", description="Candidate retrieved")
+     *     @OA\Response(response="200", description="Candidate retrieved successfully"),
+     *     @OA\Response(response="404", description="Candidate not found")
      * )
      */
     public function getCandidateById($candidateProfileId = null)
     {
-        // Get candidateProfileId from route parameter or URI segment
-        if ($candidateProfileId === null) {
-            $candidateProfileId = $this->request->getUri()->getSegment(3);
-        }
+        // Log the received parameter for debugging
+        log_message('debug', 'getCandidateById called with param: ' . var_export($candidateProfileId, true));
         
-        if (!$candidateProfileId) {
-            return $this->fail('Candidate profile ID is required', 400);
+        if (empty($candidateProfileId)) {
+            log_message('error', 'Candidate profile ID is empty or null');
+            return $this->respond([
+                'success' => false,
+                'message' => 'Candidate profile ID is required',
+                'data' => null
+            ], 400);
         }
         
         try {
@@ -421,34 +316,141 @@ class AdminCandidates extends BaseController
             $candidate = $candidateModel->find($candidateProfileId);
 
             if (!$candidate) {
-                return $this->failNotFound('Candidate profile not found');
+                log_message('error', 'Candidate not found: ' . $candidateProfileId);
+                return $this->respond([
+                    'success' => false,
+                    'message' => 'Candidate not found',
+                    'data' => null
+                ], 404);
             }
             
-            // Format candidate with user, skills, domains, educations, experiences (matching Node.js)
-            $userModel = new \App\Models\User();
+            // Format candidate with all relations
+            $formattedCandidate = $this->formatSingleCandidate($candidate);
             
-            // Skip if no userId or user not found
+            if (!$formattedCandidate) {
+                return $this->respond([
+                    'success' => false,
+                    'message' => 'Candidate profile has no associated user',
+                    'data' => null
+                ], 404);
+            }
+
+            return $this->respond([
+                'success' => true,
+                'message' => 'Candidate retrieved successfully',
+                'data' => $formattedCandidate
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', 'Get candidate error: ' . $e->getMessage() . ' | Trace: ' . $e->getTraceAsString());
+            return $this->respond([
+                'success' => false,
+                'message' => 'Failed to retrieve candidate',
+                'data' => null
+            ], 500);
+        }
+    }
+
+    /**
+     * @OA\Get(
+     *     path="/api/admin/candidates/{candidateProfileId}/applications",
+     *     tags={"Admin - Candidates"},
+     *     summary="Get all applications by candidate profile",
+     *     security={{"bearerAuth":{}}},
+     *     @OA\Parameter(name="candidateProfileId", in="path", required=true, @OA\Schema(type="string")),
+     *     @OA\Response(response="200", description="Applications retrieved successfully"),
+     *     @OA\Response(response="404", description="Candidate not found")
+     * )
+     */
+    public function getCandidateApplications($candidateProfileId = null)
+    {
+        // Log the received parameter for debugging
+        log_message('debug', 'getCandidateApplications called with param: ' . var_export($candidateProfileId, true));
+        
+        if (empty($candidateProfileId)) {
+            log_message('error', 'Candidate profile ID is empty or null');
+            return $this->respond([
+                'success' => false,
+                'message' => 'Candidate profile ID is required',
+                'data' => null
+            ], 400);
+        }
+        
+        try {
+            $candidateModel = new CandidateProfile();
+            $candidate = $candidateModel->find($candidateProfileId);
+            
+            if (!$candidate) {
+                log_message('error', 'Candidate profile not found: ' . $candidateProfileId);
+                return $this->respond([
+                    'success' => false,
+                    'message' => 'Candidate profile not found',
+                    'data' => null
+                ], 404);
+            }
+            
+            // Get applications for this candidate
+            $applicationModel = new \App\Models\Application();
+            $applications = $applicationModel->where('candidateId', $candidate['userId'])
+                ->orderBy('appliedAt', 'DESC')
+                ->findAll();
+            
+            // Format applications with job details
+            $formattedApplications = $this->formatApplications($applications);
+            
+            return $this->respond([
+                'success' => true,
+                'message' => 'Applications retrieved successfully',
+                'data' => $formattedApplications
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', 'Get candidate applications error: ' . $e->getMessage() . ' | Trace: ' . $e->getTraceAsString());
+            return $this->respond([
+                'success' => false,
+                'message' => 'Failed to retrieve applications',
+                'data' => null
+            ], 500);
+        }
+    }
+
+    // ============================================
+    // PRIVATE HELPER METHODS
+    // ============================================
+
+    private function formatCandidates(array $candidates): array
+    {
+        $userModel = new \App\Models\User();
+        $candidateSkillModel = new \App\Models\CandidateSkill();
+        $candidateDomainModel = new \App\Models\CandidateDomain();
+        $skillModel = new \App\Models\Skill();
+        $domainModel = new \App\Models\Domain();
+        $educationModel = new \App\Models\Education();
+        $experienceModel = new \App\Models\Experience();
+        $certificationModel = new \App\Models\Certification();
+        
+        $formattedCandidates = [];
+        
+        foreach ($candidates as $candidate) {
             if (empty($candidate['userId'])) {
-                return $this->failNotFound('Candidate profile has no associated user');
+                continue;
             }
             
-            $user = $userModel->select('id, firstName, lastName, email, phone, avatar, emailVerified, status, role, createdAt, lastLoginAt')
+            $user = $userModel->select('id, email, firstName, lastName, phone, avatar, emailVerified, status, createdAt')
                 ->find($candidate['userId']);
             
             if (!$user) {
-                return $this->failNotFound('User not found for this candidate profile');
+                continue;
             }
             
             $candidate['user'] = $user;
             
-            // Get skills (matching Node.js - wrapped in { skill: ... })
-            $candidateSkillModel = new \App\Models\CandidateSkill();
-            $candidateSkills = $candidateSkillModel->where('candidateId', $candidateProfileId)
+            // Get skills (limit 10)
+            $candidateSkills = $candidateSkillModel->where('candidateId', $candidate['id'])
                 ->orderBy('createdAt', 'DESC')
+                ->limit(10)
                 ->findAll();
+            
             $skills = [];
             foreach ($candidateSkills as $cs) {
-                $skillModel = new \App\Models\Skill();
                 $skill = $skillModel->find($cs['skillId']);
                 if ($skill) {
                     $skills[] = [
@@ -464,12 +466,10 @@ class AdminCandidates extends BaseController
             }
             $candidate['skills'] = $skills;
             
-            // Get domains (matching Node.js - wrapped in { domain: ... })
-            $candidateDomainModel = new \App\Models\CandidateDomain();
-            $candidateDomains = $candidateDomainModel->where('candidateId', $candidateProfileId)->findAll();
+            // Get domains
+            $candidateDomains = $candidateDomainModel->where('candidateId', $candidate['id'])->findAll();
             $domains = [];
             foreach ($candidateDomains as $cd) {
-                $domainModel = new \App\Models\Domain();
                 $domain = $domainModel->find($cd['domainId']);
                 if ($domain) {
                     $domains[] = [
@@ -484,139 +484,160 @@ class AdminCandidates extends BaseController
             }
             $candidate['domains'] = $domains;
             
-            // Get educations (matching Node.js)
-            $educationModel = new \App\Models\Education();
-            $candidate['educations'] = $educationModel->where('candidateId', $candidateProfileId)
-                ->orderBy('startDate', 'DESC')
-                ->findAll();
+            // Get counts
+            $candidate['_count'] = [
+                'educations' => (int) $educationModel->where('candidateId', $candidate['id'])->countAllResults(false),
+                'experiences' => (int) $experienceModel->where('candidateId', $candidate['id'])->countAllResults(false),
+                'certifications' => (int) $certificationModel->where('candidateId', $candidate['id'])->countAllResults(false)
+            ];
             
-            // Get experiences (matching Node.js)
-            $experienceModel = new \App\Models\Experience();
-            $candidate['experiences'] = $experienceModel->where('candidateId', $candidateProfileId)
-                ->orderBy('startDate', 'DESC')
-                ->findAll();
-            
-            // Get certifications (matching Node.js)
-            $certificationModel = new \App\Models\Certification();
-            $candidate['certifications'] = $certificationModel->where('candidateId', $candidateProfileId)
-                ->orderBy('issueDate', 'DESC')
-                ->findAll();
-            
-            // Get languages (matching Node.js - wrapped in { language: ... })
-            $candidateLanguageModel = new \App\Models\CandidateLanguage();
-            $candidateLanguages = $candidateLanguageModel->where('candidateId', $candidateProfileId)->findAll();
-            $languages = [];
-            foreach ($candidateLanguages as $cl) {
-                $languageModel = new \App\Models\Language();
-                $language = $languageModel->find($cl['languageId']);
-                if ($language) {
-                    $languages[] = [
-                        'id' => $cl['id'],
-                        'candidateId' => $cl['candidateId'],
-                        'languageId' => $cl['languageId'],
-                        'proficiency' => $cl['proficiency'] ?? null,
-                        'createdAt' => $cl['createdAt'] ?? null,
-                        'language' => $language
-                    ];
-                }
-            }
-            $candidate['languages'] = $languages;
-            
-            // Get resumes (matching Node.js)
-            $resumeModel = new \App\Models\ResumeVersion();
-            $candidate['resumes'] = $resumeModel->where('candidateId', $candidateProfileId)
-                ->orderBy('version', 'DESC')
-                ->findAll();
-
-            return $this->respond([
-                'success' => true,
-                'message' => 'Candidate retrieved successfully',
-                'data' => $candidate
-            ]);
-        } catch (\Exception $e) {
-            return $this->respond([
-                'success' => false,
-                'message' => 'Failed to retrieve candidate',
-                'data' => []
-            ], 500);
+            $formattedCandidates[] = $candidate;
         }
+        
+        return $formattedCandidates;
     }
 
-    /**
-     * @OA\Get(
-     *     path="/api/admin/candidates/{candidateProfileId}/applications",
-     *     tags={"Admin - Candidates"},
-     *     summary="Get all applications by candidate profile",
-     *     security={{"bearerAuth":{}}},
-     *     @OA\Parameter(name="candidateProfileId", in="path", required=true, @OA\Schema(type="string")),
-     *     @OA\Response(response="200", description="Applications retrieved")
-     * )
-     */
-    public function getCandidateApplications($candidateProfileId = null)
+    private function formatSingleCandidate(array $candidate): ?array
     {
-        // Get candidateProfileId from route parameter or URI segment
-        if ($candidateProfileId === null) {
-            $candidateProfileId = $this->request->getUri()->getSegment(3);
+        if (empty($candidate['userId'])) {
+            return null;
         }
         
-        if (!$candidateProfileId) {
-            return $this->fail('Candidate profile ID is required', 400);
+        $userModel = new \App\Models\User();
+        $user = $userModel->select('id, firstName, lastName, email, phone, avatar, emailVerified, status, role, createdAt, lastLoginAt')
+            ->find($candidate['userId']);
+        
+        if (!$user) {
+            return null;
         }
         
-        try {
-            $candidateModel = new CandidateProfile();
-            $candidate = $candidateModel->find($candidateProfileId);
+        $candidate['user'] = $user;
+        
+        // Get skills
+        $candidateSkillModel = new \App\Models\CandidateSkill();
+        $candidateSkills = $candidateSkillModel->where('candidateId', $candidate['id'])
+            ->orderBy('createdAt', 'DESC')
+            ->findAll();
+        
+        $skillModel = new \App\Models\Skill();
+        $skills = [];
+        foreach ($candidateSkills as $cs) {
+            $skill = $skillModel->find($cs['skillId']);
+            if ($skill) {
+                $skills[] = [
+                    'id' => $cs['id'],
+                    'candidateId' => $cs['candidateId'],
+                    'skillId' => $cs['skillId'],
+                    'level' => $cs['level'] ?? null,
+                    'yearsOfExp' => $cs['yearsOfExp'] ?? null,
+                    'createdAt' => $cs['createdAt'] ?? null,
+                    'skill' => $skill
+                ];
+            }
+        }
+        $candidate['skills'] = $skills;
+        
+        // Get domains
+        $candidateDomainModel = new \App\Models\CandidateDomain();
+        $candidateDomains = $candidateDomainModel->where('candidateId', $candidate['id'])->findAll();
+        
+        $domainModel = new \App\Models\Domain();
+        $domains = [];
+        foreach ($candidateDomains as $cd) {
+            $domain = $domainModel->find($cd['domainId']);
+            if ($domain) {
+                $domains[] = [
+                    'id' => $cd['id'],
+                    'candidateId' => $cd['candidateId'],
+                    'domainId' => $cd['domainId'],
+                    'isPrimary' => $cd['isPrimary'] ?? false,
+                    'createdAt' => $cd['createdAt'] ?? null,
+                    'domain' => $domain
+                ];
+            }
+        }
+        $candidate['domains'] = $domains;
+        
+        // Get educations
+        $educationModel = new \App\Models\Education();
+        $candidate['educations'] = $educationModel->where('candidateId', $candidate['id'])
+            ->orderBy('startDate', 'DESC')
+            ->findAll();
+        
+        // Get experiences
+        $experienceModel = new \App\Models\Experience();
+        $candidate['experiences'] = $experienceModel->where('candidateId', $candidate['id'])
+            ->orderBy('startDate', 'DESC')
+            ->findAll();
+        
+        // Get certifications
+        $certificationModel = new \App\Models\Certification();
+        $candidate['certifications'] = $certificationModel->where('candidateId', $candidate['id'])
+            ->orderBy('issueDate', 'DESC')
+            ->findAll();
+        
+        // Get languages
+        $candidateLanguageModel = new \App\Models\CandidateLanguage();
+        $candidateLanguages = $candidateLanguageModel->where('candidateId', $candidate['id'])->findAll();
+        
+        $languageModel = new \App\Models\Language();
+        $languages = [];
+        foreach ($candidateLanguages as $cl) {
+            $language = $languageModel->find($cl['languageId']);
+            if ($language) {
+                $languages[] = [
+                    'id' => $cl['id'],
+                    'candidateId' => $cl['candidateId'],
+                    'languageId' => $cl['languageId'],
+                    'proficiency' => $cl['proficiency'] ?? null,
+                    'createdAt' => $cl['createdAt'] ?? null,
+                    'language' => $language
+                ];
+            }
+        }
+        $candidate['languages'] = $languages;
+        
+        // Get resumes
+        $resumeModel = new \App\Models\ResumeVersion();
+        $candidate['resumes'] = $resumeModel->where('candidateId', $candidate['id'])
+            ->orderBy('version', 'DESC')
+            ->findAll();
+        
+        return $candidate;
+    }
+
+    private function formatApplications(array $applications): array
+    {
+        $jobModel = new \App\Models\Job();
+        $companyModel = new \App\Models\Company();
+        $categoryModel = new \App\Models\JobCategory();
+        $statusHistoryModel = new \App\Models\ApplicationStatusHistory();
+        
+        $formattedApplications = [];
+        
+        foreach ($applications as $application) {
+            $job = $jobModel->find($application['jobId']);
             
-            if (!$candidate) {
-                return $this->failNotFound('Candidate profile not found');
+            if ($job) {
+                $company = $companyModel->select('id, name, logo, location')
+                    ->find($job['companyId']);
+                $job['company'] = $company;
+                
+                $category = $categoryModel->find($job['categoryId']);
+                $job['category'] = $category;
+                
+                $application['job'] = $job;
             }
             
-            // Get applications for this candidate (matching Node.js - order by appliedAt)
-            $applicationModel = new \App\Models\Application();
-            $applications = $applicationModel->where('candidateId', $candidate['userId'])
-                ->orderBy('appliedAt', 'DESC')
+            // Get status history
+            $statusHistory = $statusHistoryModel->where('applicationId', $application['id'])
+                ->orderBy('changedAt', 'DESC')
                 ->findAll();
+            $application['statusHistory'] = $statusHistory;
             
-            // Format applications with job details and statusHistory (matching Node.js)
-            $jobModel = new \App\Models\Job();
-            $companyModel = new \App\Models\Company();
-            $categoryModel = new \App\Models\JobCategory();
-            $statusHistoryModel = new \App\Models\ApplicationStatusHistory();
-            
-            $formattedApplications = [];
-            foreach ($applications as $application) {
-                $formattedApp = $application;
-                
-                // Get job details
-                $job = $jobModel->find($application['jobId']);
-                if ($job) {
-                    $company = $companyModel->select('id, name, logo, location')
-                        ->find($job['companyId']);
-                    $job['company'] = $company;
-                    $job['category'] = $categoryModel->find($job['categoryId']);
-                    $formattedApp['job'] = $job;
-                }
-                
-                // Get status history (matching Node.js)
-                $statusHistory = $statusHistoryModel->where('applicationId', $application['id'])
-                    ->orderBy('changedAt', 'DESC')
-                    ->findAll();
-                $formattedApp['statusHistory'] = $statusHistory;
-                
-                $formattedApplications[] = $formattedApp;
-            }
-            
-            return $this->respond([
-                'success' => true,
-                'message' => 'Applications retrieved successfully',
-                'data' => $formattedApplications
-            ]);
-        } catch (\Exception $e) {
-            return $this->respond([
-                'success' => false,
-                'message' => 'Failed to retrieve applications',
-                'data' => []
-            ], 500);
+            $formattedApplications[] = $application;
         }
+        
+        return $formattedApplications;
     }
 }

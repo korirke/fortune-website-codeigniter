@@ -229,18 +229,20 @@ $routes->group('api/admin', ['namespace' => 'App\Controllers\Admin', 'filter' =>
 
 // Admin Candidates Routes - WITH /api/ prefix
 $routes->group('api/admin/candidates', ['namespace' => 'App\Controllers\AdminCandidate', 'filter' => 'auth'], function($routes) {
-    $routes->get('', 'AdminCandidates::getAllCandidates');
+    // IMPORTANT: Specific routes MUST come before parameterized routes
     $routes->get('stats', 'AdminCandidates::getCandidateStats');
-    $routes->get('(:segment)', 'AdminCandidates::getCandidateById');
-    $routes->get('(:segment)/applications', 'AdminCandidates::getCandidateApplications');
+    $routes->get('', 'AdminCandidates::getAllCandidates');
+    // Use (:any) instead of (:segment) for longer IDs like cprofile_6937e1ef31b9a
+    $routes->get('(:any)/applications', 'AdminCandidates::getCandidateApplications/$1');
+    $routes->get('(:any)', 'AdminCandidates::getCandidateById/$1');
 });
 
 // Also support without /api/ prefix for backward compatibility (if frontend calls it)
 $routes->group('admin/candidates', ['namespace' => 'App\Controllers\AdminCandidate', 'filter' => 'auth'], function($routes) {
-    $routes->get('', 'AdminCandidates::getAllCandidates');
     $routes->get('stats', 'AdminCandidates::getCandidateStats');
-    $routes->get('(:segment)', 'AdminCandidates::getCandidateById');
-    $routes->get('(:segment)/applications', 'AdminCandidates::getCandidateApplications');
+    $routes->get('', 'AdminCandidates::getAllCandidates');
+    $routes->get('(:any)/applications', 'AdminCandidates::getCandidateApplications/$1');
+    $routes->get('(:any)', 'AdminCandidates::getCandidateById/$1');
 });
 
 // Users Routes - WITH /api/ prefix
