@@ -47,26 +47,26 @@ class Candidate extends BaseController
 
             $profileModel = new CandidateProfile();
             $profile = $profileModel->where('userId', $user->id)->first();
-            
+
             if (!$profile) {
                 return $this->failNotFound('Candidate profile not found');
             }
-            
+
             // Get related data matching Node.js structure
             $userModel = new User();
             $userData = $userModel->select('id, email, firstName, lastName, phone, avatar, emailVerified, createdAt')
                 ->find($user->id);
-            
+
             if (!$userData) {
                 return $this->failNotFound('User not found');
             }
-            
+
             // Get skills with skill details (matching Node.js - wrapped in { skill: ... })
             $candidateSkillModel = new CandidateSkill();
             $candidateSkills = $candidateSkillModel->where('candidateId', $profile['id'])
                 ->orderBy('createdAt', 'DESC')
                 ->findAll();
-            
+
             $skillModel = new Skill();
             $skills = [];
             foreach ($candidateSkills as $cs) {
@@ -83,13 +83,13 @@ class Candidate extends BaseController
                     ];
                 }
             }
-            
+
             // Get domains with domain details (matching Node.js - wrapped in { domain: ... })
             $candidateDomainModel = new CandidateDomain();
             $candidateDomains = $candidateDomainModel->where('candidateId', $profile['id'])
                 ->orderBy('isPrimary', 'DESC')
                 ->findAll();
-            
+
             $domainModel = new Domain();
             $domains = [];
             foreach ($candidateDomains as $cd) {
@@ -105,31 +105,31 @@ class Candidate extends BaseController
                     ];
                 }
             }
-            
-            // Get educations (matching Node.js)
+
+            // Get educations
             $educationModel = new Education();
             $educations = $educationModel->where('candidateId', $profile['id'])
                 ->orderBy('startDate', 'DESC')
                 ->findAll();
-            
-            // Get experiences (matching Node.js)
+
+            // Get experiences
             $experienceModel = new Experience();
             $experiences = $experienceModel->where('candidateId', $profile['id'])
                 ->orderBy('startDate', 'DESC')
                 ->findAll();
-            
-            // Get certifications (matching Node.js)
+
+            // Get certifications
             $certificationModel = new \App\Models\Certification();
             $certifications = $certificationModel->where('candidateId', $profile['id'])
                 ->orderBy('issueDate', 'DESC')
                 ->findAll();
-            
+
             // Get languages (matching Node.js - wrapped in { language: ... })
             $languages = [];
             try {
                 $candidateLanguageModel = new \App\Models\CandidateLanguage();
                 $candidateLanguages = $candidateLanguageModel->where('candidateId', $profile['id'])->findAll();
-                
+
                 $languageModel = new \App\Models\Language();
                 foreach ($candidateLanguages as $cl) {
                     $language = $languageModel->find($cl['languageId'] ?? null);
@@ -148,14 +148,14 @@ class Candidate extends BaseController
                 // If languages table doesn't exist or query fails, just set empty array
                 $languages = [];
             }
-            
-            // Get resumes (latest 5) (matching Node.js)
+
+            // Get resumes (latest 5)
             $resumeModel = new ResumeVersion();
             $resumes = $resumeModel->where('candidateId', $profile['id'])
                 ->orderBy('version', 'DESC')
                 ->limit(5)
                 ->findAll();
-            
+
             // Build response matching Node.js structure exactly
             $profileData = $profile;
             $profileData['user'] = $userData;
@@ -166,7 +166,7 @@ class Candidate extends BaseController
             $profileData['certifications'] = $certifications;
             $profileData['languages'] = $languages;
             $profileData['resumes'] = $resumes;
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Profile retrieved successfully',
@@ -176,7 +176,7 @@ class Candidate extends BaseController
             // Log error for debugging
             log_message('error', 'Failed to retrieve candidate profile: ' . $e->getMessage());
             log_message('error', 'Stack trace: ' . $e->getTraceAsString());
-            
+
             return $this->respond([
                 'success' => false,
                 'message' => 'Failed to retrieve profile: ' . $e->getMessage(),
@@ -204,13 +204,13 @@ class Candidate extends BaseController
         try {
             $data = $this->request->getJSON(true);
             $profileModel = new CandidateProfile();
-            
+
             $profile = $profileModel->where('userId', $user->id)->first();
             if (!$profile) {
                 return $this->failNotFound('Candidate profile not found');
             }
-            
-            // Validate required fields (matching Node.js)
+
+            // Validate required fields
             $requiredFields = ['title', 'bio', 'location', 'phone', 'experienceYears'];
             $missingFields = [];
             foreach ($requiredFields as $field) {
@@ -218,32 +218,32 @@ class Candidate extends BaseController
                     $missingFields[] = $field;
                 }
             }
-            
+
             if (!empty($missingFields)) {
                 return $this->fail('Missing required fields: ' . implode(', ', $missingFields), 400);
             }
-            
-            // Validate phone format (matching Node.js)
+
+            // Validate phone format
             if (isset($data['phone']) && !preg_match('/^\+?[1-9]\d{1,14}$/', $data['phone'])) {
                 return $this->fail('Please provide a valid phone number with country code (e.g., +254712345678)', 400);
             }
-            
+
             // Handle date conversion
             if (isset($data['availableFrom'])) {
                 $data['availableFrom'] = date('Y-m-d', strtotime($data['availableFrom']));
             }
-            
+
             // Update profile
             $profileModel->update($profile['id'], $data);
-            
-            // Get updated profile with user data (matching Node.js)
+
+            // Get updated profile with user data
             $updatedProfile = $profileModel->where('userId', $user->id)->first();
             $userModel = new User();
             $userData = $userModel->select('firstName, lastName, email, phone')
                 ->find($user->id);
-            
+
             $updatedProfile['user'] = $userData;
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Profile updated successfully',
@@ -284,29 +284,36 @@ class Candidate extends BaseController
             mkdir($uploadPath, 0755, true);
         }
 
-        $newName = $file->getRandomName();
-        $file->move($uploadPath, $newName);
-
         $profileModel = new CandidateProfile();
         $profile = $profileModel->where('userId', $user->id)->first();
-        
+
         if (!$profile) {
             return $this->failNotFound('Candidate profile not found');
         }
-        
+
         // Calculate next version number
         $resumeModel = new ResumeVersion();
         $latestResume = $resumeModel->where('candidateId', $profile['id'])
             ->orderBy('version', 'DESC')
             ->first();
-        
+
         $nextVersion = $latestResume ? ((int)$latestResume['version'] + 1) : 1;
 
-        // Use transaction to ensure both operations succeed or fail together (matching Node.js)
+        // Use transaction to ensure both operations succeed or fail together
         $db = \Config\Database::connect();
         $db->transStart();
-        
+
         try {
+            // Sanitize original filename and add timestamp (recommended)
+            $originalName = $file->getClientName();
+            $pathInfo = pathinfo($originalName);
+            $sanitizedName = preg_replace('/[^a-zA-Z0-9._-]/', '_', $pathInfo['filename']);
+            $extension = $pathInfo['extension'] ?? '';
+            $timestamp = time();
+            $newName = "{$sanitizedName}_{$timestamp}.{$extension}";
+
+            $file->move($uploadPath, $newName);
+
             $resumeData = [
                 'id' => uniqid('resume_'),
                 'candidateId' => $profile['id'],
@@ -316,22 +323,22 @@ class Candidate extends BaseController
                 'fileSize' => $file->getSize()
             ];
             $resumeModel->insert($resumeData);
-            
+
             // Update profile with latest resume URL
             $profileModel->update($profile['id'], [
                 'resumeUrl' => '/uploads/resumes/' . $newName,
                 'resumeUpdatedAt' => date('Y-m-d H:i:s')
             ]);
-            
+
             $db->transComplete();
-            
+
             if ($db->transStatus() === false) {
                 throw new \Exception('Transaction failed');
             }
-            
+
             // Get created resume (matching Node.js response)
             $createdResume = $resumeModel->find($resumeData['id']);
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Resume uploaded successfully',
@@ -364,32 +371,32 @@ class Candidate extends BaseController
         }
 
         $data = $this->request->getJSON(true);
-        
-        // Validate skillName (matching Node.js)
+
+        // Validate skillName
         if (empty($data['skillName']) || !isset($data['skillName'])) {
             return $this->fail('Skill name is required', 400);
         }
-        
+
         $profileModel = new CandidateProfile();
         $profile = $profileModel->where('userId', $user->id)->first();
-        
+
         if (!$profile) {
             return $this->failNotFound('Candidate profile not found');
         }
 
         try {
-            // Find or create skill (matching Node.js)
+            // Find or create skill
             $skillName = trim($data['skillName']);
             // Generate slug exactly like Node.js: lowercase -> replace spaces with hyphen -> remove non-alphanumeric (except hyphen)
             $slug = strtolower($skillName);
             $slug = preg_replace('/\s+/', '-', $slug);
             $slug = preg_replace('/[^a-z0-9-]/', '', $slug);
-            
+
             $skillModel = new Skill();
             $skill = $skillModel->where('name', $skillName)
                 ->orWhere('slug', $slug)
                 ->first();
-            
+
             if (!$skill) {
                 // Create new skill
                 $skillId = uniqid('skill_');
@@ -401,17 +408,17 @@ class Candidate extends BaseController
                 ]);
                 $skill = $skillModel->find($skillId);
             }
-            
+
             if (!$skill) {
                 return $this->fail('Failed to create or find skill', 500);
             }
 
-            // Check if skill already exists for this candidate (matching Node.js)
+            // Check if skill already exists for this candidate
             $candidateSkillModel = new CandidateSkill();
             $existing = $candidateSkillModel->where('candidateId', $profile['id'])
                 ->where('skillId', $skill['id'])
                 ->first();
-            
+
             if ($existing) {
                 return $this->fail('Skill already added to your profile', 409);
             }
@@ -425,7 +432,7 @@ class Candidate extends BaseController
                 'yearsOfExp' => $data['yearsOfExp'] ?? null
             ];
             $candidateSkillModel->insert($candidateSkillData);
-            
+
             // Get created candidate skill with skill details (matching Node.js structure)
             $createdCandidateSkill = [
                 'id' => $candidateSkillData['id'],
@@ -468,11 +475,11 @@ class Candidate extends BaseController
         if ($skillId === null) {
             $skillId = $this->request->getUri()->getSegment(4);
         }
-        
+
         if (!$skillId) {
             return $this->fail('Skill ID is required', 400);
         }
-        
+
         $user = $this->request->user ?? null;
         if (!$user) {
             return $this->fail('Unauthorized', 401);
@@ -480,7 +487,7 @@ class Candidate extends BaseController
 
         $profileModel = new CandidateProfile();
         $profile = $profileModel->where('userId', $user->id)->first();
-        
+
         if (!$profile) {
             return $this->fail('Profile not found', 404);
         }
@@ -490,13 +497,13 @@ class Candidate extends BaseController
             $candidateSkill = $candidateSkillModel->where('candidateId', $profile['id'])
                 ->where('skillId', $skillId)
                 ->first();
-            
+
             if (!$candidateSkill) {
                 return $this->failNotFound('Skill not found in your profile');
             }
-            
+
             $candidateSkillModel->delete($candidateSkill['id']);
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Skill removed successfully'
@@ -524,7 +531,7 @@ class Candidate extends BaseController
     {
         $skillModel = new Skill();
         $skills = $skillModel->where('isActive', true)->orderBy('name', 'ASC')->findAll();
-        
+
         return $this->respond([
             'success' => true,
             'message' => 'Skills retrieved successfully',
@@ -551,37 +558,37 @@ class Candidate extends BaseController
         $data = $this->request->getJSON(true);
         $profileModel = new CandidateProfile();
         $profile = $profileModel->where('userId', $user->id)->first();
-        
+
         if (!$profile) {
             return $this->failNotFound('Candidate profile not found');
         }
 
         try {
-            // Check if domain exists (matching Node.js)
+            // Check if domain exists
             $domainModel = new Domain();
             $domain = $domainModel->find($data['domainId']);
-            
+
             if (!$domain) {
                 return $this->failNotFound('Domain not found');
             }
 
-            // Check if domain already exists for this candidate (matching Node.js)
+            // Check if domain already exists for this candidate
             $candidateDomainModel = new CandidateDomain();
             $existing = $candidateDomainModel->where('candidateId', $profile['id'])
                 ->where('domainId', $data['domainId'])
                 ->first();
-            
+
             if ($existing) {
                 return $this->fail('Domain already added to your profile', 409);
             }
 
-            // Use transaction if setting as primary (matching Node.js)
+            // Use transaction if setting as primary
             $isPrimary = $data['isPrimary'] ?? false;
             $db = \Config\Database::connect();
             $db->transStart();
-            
+
             try {
-                // If setting as primary, unset other primary domains (matching Node.js)
+                // If setting as primary, unset other primary domains
                 if ($isPrimary) {
                     $candidateDomainModel->where('candidateId', $profile['id'])
                         ->where('isPrimary', true)
@@ -589,7 +596,7 @@ class Candidate extends BaseController
                         ->update();
                 }
 
-                // Add domain (matching Node.js)
+                // Add domain
                 $domainData = [
                     'id' => uniqid('cdomain_'),
                     'candidateId' => $profile['id'],
@@ -597,13 +604,13 @@ class Candidate extends BaseController
                     'isPrimary' => $isPrimary
                 ];
                 $candidateDomainModel->insert($domainData);
-                
+
                 $db->transComplete();
-                
+
                 if ($db->transStatus() === false) {
                     throw new \Exception('Transaction failed');
                 }
-                
+
                 // Get created domain with domain details (matching Node.js structure)
                 $createdDomain = [
                     'id' => $domainData['id'],
@@ -648,11 +655,11 @@ class Candidate extends BaseController
         if ($domainId === null) {
             $domainId = $this->request->getUri()->getSegment(4);
         }
-        
+
         if (!$domainId) {
             return $this->fail('Domain ID is required', 400);
         }
-        
+
         $user = $this->request->user ?? null;
         if (!$user) {
             return $this->fail('Unauthorized', 401);
@@ -660,7 +667,7 @@ class Candidate extends BaseController
 
         $profileModel = new CandidateProfile();
         $profile = $profileModel->where('userId', $user->id)->first();
-        
+
         if (!$profile) {
             return $this->fail('Profile not found', 404);
         }
@@ -670,13 +677,13 @@ class Candidate extends BaseController
             $domain = $domainModel->where('candidateId', $profile['id'])
                 ->where('domainId', $domainId)
                 ->first();
-            
+
             if (!$domain) {
                 return $this->failNotFound('Domain not found in your profile');
             }
-            
+
             $domainModel->delete($domain['id']);
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Domain removed successfully'
@@ -706,7 +713,7 @@ class Candidate extends BaseController
             ->where('parentId', null)
             ->orderBy('sortOrder', 'ASC')
             ->findAll();
-        
+
         // Get children for each domain
         foreach ($domains as &$domain) {
             $domain['children'] = $domainModel->where('isActive', true)
@@ -714,7 +721,7 @@ class Candidate extends BaseController
                 ->orderBy('sortOrder', 'ASC')
                 ->findAll();
         }
-        
+
         return $this->respond([
             'success' => true,
             'message' => 'Domains retrieved successfully',
@@ -741,20 +748,20 @@ class Candidate extends BaseController
         $data = $this->request->getJSON(true);
         $profileModel = new CandidateProfile();
         $profile = $profileModel->where('userId', $user->id)->first();
-        
+
         if (!$profile) {
             return $this->fail('Profile not found', 404);
         }
 
         try {
-            // Validate dates (matching Node.js)
+            // Validate dates
             $startDate = isset($data['startDate']) ? date('Y-m-d', strtotime($data['startDate'])) : null;
             $endDate = isset($data['endDate']) ? date('Y-m-d', strtotime($data['endDate'])) : null;
-            
+
             if ($endDate && $startDate && strtotime($endDate) < strtotime($startDate)) {
                 return $this->fail('End date cannot be before start date', 400);
             }
-            
+
             if (isset($data['isCurrent']) && $data['isCurrent'] && $endDate) {
                 return $this->fail('Cannot have end date for current education', 400);
             }
@@ -774,8 +781,8 @@ class Candidate extends BaseController
                 'description' => $data['description'] ?? null
             ];
             $educationModel->insert($educationData);
-            
-            // Get created education (matching Node.js)
+
+            // Get created education
             $createdEducation = $educationModel->find($educationData['id']);
 
             return $this->respondCreated([
@@ -808,11 +815,11 @@ class Candidate extends BaseController
         if ($educationId === null) {
             $educationId = $this->request->getUri()->getSegment(4);
         }
-        
+
         if (!$educationId) {
             return $this->fail('Education ID is required', 400);
         }
-        
+
         $user = $this->request->user ?? null;
         if (!$user) {
             return $this->fail('Unauthorized', 401);
@@ -822,33 +829,33 @@ class Candidate extends BaseController
             $data = $this->request->getJSON(true);
             $profileModel = new CandidateProfile();
             $profile = $profileModel->where('userId', $user->id)->first();
-            
+
             if (!$profile) {
                 return $this->failNotFound('Candidate profile not found');
             }
-            
+
             // Verify education belongs to this candidate
             $educationModel = new Education();
             $existingEducation = $educationModel->where('id', $educationId)
                 ->where('candidateId', $profile['id'])
                 ->first();
-            
+
             if (!$existingEducation) {
                 return $this->failNotFound('Education not found');
             }
-            
-            // Validate dates (matching Node.js)
+
+            // Validate dates
             $startDate = isset($data['startDate']) ? date('Y-m-d', strtotime($data['startDate'])) : $existingEducation['startDate'];
             $endDate = isset($data['endDate']) ? date('Y-m-d', strtotime($data['endDate'])) : $existingEducation['endDate'];
-            
+
             if ($endDate && $startDate && strtotime($endDate) < strtotime($startDate)) {
                 return $this->fail('End date cannot be before start date', 400);
             }
-            
+
             if (isset($data['isCurrent']) && $data['isCurrent'] && $endDate) {
                 return $this->fail('Cannot have end date for current education', 400);
             }
-            
+
             $updateData = [
                 'degree' => $data['degree'] ?? $existingEducation['degree'],
                 'fieldOfStudy' => $data['fieldOfStudy'] ?? $existingEducation['fieldOfStudy'],
@@ -860,10 +867,10 @@ class Candidate extends BaseController
                 'grade' => $data['grade'] ?? $existingEducation['grade'],
                 'description' => $data['description'] ?? $existingEducation['description']
             ];
-            
+
             $educationModel->update($educationId, $updateData);
-            
-            // Get updated education (matching Node.js)
+
+            // Get updated education
             $updatedEducation = $educationModel->find($educationId);
 
             return $this->respond([
@@ -895,11 +902,11 @@ class Candidate extends BaseController
         if ($educationId === null) {
             $educationId = $this->request->getUri()->getSegment(4);
         }
-        
+
         if (!$educationId) {
             return $this->fail('Education ID is required', 400);
         }
-        
+
         $user = $this->request->user ?? null;
         if (!$user) {
             return $this->fail('Unauthorized', 401);
@@ -908,21 +915,21 @@ class Candidate extends BaseController
         try {
             $profileModel = new CandidateProfile();
             $profile = $profileModel->where('userId', $user->id)->first();
-            
+
             if (!$profile) {
                 return $this->failNotFound('Candidate profile not found');
             }
-            
+
             // Verify education belongs to this candidate
             $educationModel = new Education();
             $existingEducation = $educationModel->where('id', $educationId)
                 ->where('candidateId', $profile['id'])
                 ->first();
-            
+
             if (!$existingEducation) {
                 return $this->failNotFound('Education not found');
             }
-            
+
             $educationModel->delete($educationId);
 
             return $this->respond([
@@ -957,24 +964,24 @@ class Candidate extends BaseController
         $data = $this->request->getJSON(true);
         $profileModel = new CandidateProfile();
         $profile = $profileModel->where('userId', $user->id)->first();
-        
+
         if (!$profile) {
             return $this->fail('Profile not found', 404);
         }
 
         try {
-            // Validate dates (matching Node.js)
+            // Validate dates
             $startDate = isset($data['startDate']) ? date('Y-m-d', strtotime($data['startDate'])) : null;
             $endDate = isset($data['endDate']) ? date('Y-m-d', strtotime($data['endDate'])) : null;
-            
+
             if ($endDate && $startDate && strtotime($endDate) < strtotime($startDate)) {
                 return $this->fail('End date cannot be before start date', 400);
             }
-            
+
             if (isset($data['isCurrent']) && $data['isCurrent'] && $endDate) {
                 return $this->fail('Cannot have end date for current position', 400);
             }
-            
+
             $experienceModel = new Experience();
             $experienceData = [
                 'id' => uniqid('exp_'),
@@ -989,8 +996,8 @@ class Candidate extends BaseController
                 'description' => $data['description'] ?? null
             ];
             $experienceModel->insert($experienceData);
-            
-            // Get created experience (matching Node.js)
+
+            // Get created experience
             $createdExperience = $experienceModel->find($experienceData['id']);
 
             return $this->respondCreated([
@@ -1024,49 +1031,49 @@ class Candidate extends BaseController
         if ($experienceId === null) {
             $experienceId = $this->request->getUri()->getSegment(4);
         }
-        
+
         if (!$experienceId) {
             return $this->fail('Experience ID is required', 400);
         }
-        
+
         $user = $this->request->user ?? null;
         if (!$user) {
             return $this->fail('Unauthorized', 401);
         }
 
         $data = $this->request->getJSON(true);
-        
+
         try {
             $profileModel = new CandidateProfile();
             $profile = $profileModel->where('userId', $user->id)->first();
-            
+
             if (!$profile) {
                 return $this->failNotFound('Candidate profile not found');
             }
-            
-            // Verify experience belongs to this candidate (matching Node.js)
+
+            // Verify experience belongs to this candidate
             $experienceModel = new Experience();
             $existingExperience = $experienceModel->where('id', $experienceId)
                 ->where('candidateId', $profile['id'])
                 ->first();
-            
+
             if (!$existingExperience) {
                 return $this->failNotFound('Experience not found');
             }
-            
-            // Validate dates (matching Node.js)
+
+            // Validate dates
             $startDate = isset($data['startDate']) ? date('Y-m-d', strtotime($data['startDate'])) : $existingExperience['startDate'];
             $endDate = isset($data['endDate']) ? date('Y-m-d', strtotime($data['endDate'])) : ($existingExperience['endDate'] ?? null);
-            
+
             if ($endDate && $startDate && strtotime($endDate) < strtotime($startDate)) {
                 return $this->fail('End date cannot be before start date', 400);
             }
-            
+
             if (isset($data['isCurrent']) && $data['isCurrent'] && $endDate) {
                 return $this->fail('Cannot have end date for current position', 400);
             }
-            
-            // Update experience (matching Node.js)
+
+            // Update experience
             $updateData = [
                 'title' => $data['title'] ?? $existingExperience['title'],
                 'company' => $data['company'] ?? $existingExperience['company'],
@@ -1077,10 +1084,10 @@ class Candidate extends BaseController
                 'isCurrent' => $data['isCurrent'] ?? ($existingExperience['isCurrent'] ?? false),
                 'description' => $data['description'] ?? ($existingExperience['description'] ?? null)
             ];
-            
+
             $experienceModel->update($experienceId, $updateData);
-            
-            // Get updated experience (matching Node.js)
+
+            // Get updated experience
             $updatedExperience = $experienceModel->find($experienceId);
 
             return $this->respond([
@@ -1113,11 +1120,11 @@ class Candidate extends BaseController
         if ($experienceId === null) {
             $experienceId = $this->request->getUri()->getSegment(4);
         }
-        
+
         if (!$experienceId) {
             return $this->fail('Experience ID is required', 400);
         }
-        
+
         $user = $this->request->user ?? null;
         if (!$user) {
             return $this->fail('Unauthorized', 401);
@@ -1126,21 +1133,21 @@ class Candidate extends BaseController
         try {
             $profileModel = new CandidateProfile();
             $profile = $profileModel->where('userId', $user->id)->first();
-            
+
             if (!$profile) {
                 return $this->failNotFound('Candidate profile not found');
             }
-            
+
             // Verify experience belongs to this candidate
             $experienceModel = new Experience();
             $existingExperience = $experienceModel->where('id', $experienceId)
                 ->where('candidateId', $profile['id'])
                 ->first();
-            
+
             if (!$existingExperience) {
                 return $this->failNotFound('Experience not found');
             }
-            
+
             $experienceModel->delete($experienceId);
 
             return $this->respond([
@@ -1174,62 +1181,62 @@ class Candidate extends BaseController
 
         $data = $this->request->getJSON(true);
         $applicationModel = new Application();
-        
+
         try {
-            // Validate privacy consent (matching Node.js)
+            // Validate privacy consent
             if (!isset($data['privacyConsent']) || !$data['privacyConsent']) {
                 return $this->fail('You must accept the privacy policy to submit your application', 400);
             }
-            
+
             // Get candidate profile
             $profileModel = new CandidateProfile();
             $profile = $profileModel->where('userId', $user->id)->first();
-            
+
             if (!$profile) {
                 return $this->failNotFound('Candidate profile not found. Please complete your profile first.');
             }
-            
+
             // Check if job exists and is active
             $jobModel = new Job();
             $job = $jobModel->find($data['jobId']);
-            
+
             if (!$job) {
                 return $this->failNotFound('Job not found');
             }
-            
+
             if ($job['status'] !== 'ACTIVE') {
                 return $this->fail('This job is not currently accepting applications', 400);
             }
-            
+
             // Check if already applied
             $existing = $applicationModel->where('jobId', $data['jobId'])
                 ->where('candidateId', $user->id)
                 ->first();
-            
+
             if ($existing) {
                 return $this->fail('You have already applied to this job', 409);
             }
-            
+
             // Use resume URL from DTO, fallback to profile, validate exists
             $finalResumeUrl = $data['resumeUrl'] ?? $profile['resumeUrl'] ?? null;
             if (!$finalResumeUrl) {
                 return $this->fail('Please upload your resume before applying to jobs', 400);
             }
-            
+
             // Use portfolio from DTO if provided, otherwise from profile
             $finalPortfolioUrl = $data['portfolioUrl'] ?? $profile['portfolioUrl'] ?? null;
-            
+
             // Parse and validate available start date
             $parsedStartDate = isset($data['availableStartDate']) ? date('Y-m-d H:i:s', strtotime($data['availableStartDate'])) : date('Y-m-d H:i:s');
             $today = date('Y-m-d');
             if (date('Y-m-d', strtotime($parsedStartDate)) < $today) {
                 return $this->fail('Available start date cannot be in the past', 400);
             }
-            
-            // Use transaction to ensure both operations succeed or fail together (matching Node.js)
+
+            // Use transaction to ensure both operations succeed or fail together
             $db = \Config\Database::connect();
             $db->transStart();
-            
+
             try {
                 // Create application
                 $applicationData = [
@@ -1246,13 +1253,13 @@ class Candidate extends BaseController
                     'appliedAt' => date('Y-m-d H:i:s')
                 ];
                 $applicationModel->insert($applicationData);
-                
+
                 // Update job application count
                 $currentCount = $job['applicationCount'] ?? 0;
                 $jobModel->update($data['jobId'], [
                     'applicationCount' => $currentCount + 1
                 ]);
-                
+
                 // Create status history
                 $statusHistoryModel = new \App\Models\ApplicationStatusHistory();
                 $statusHistoryModel->insert([
@@ -1260,20 +1267,20 @@ class Candidate extends BaseController
                     'applicationId' => $applicationData['id'],
                     'toStatus' => 'PENDING'
                 ]);
-                
+
                 $db->transComplete();
-                
+
                 if ($db->transStatus() === false) {
                     throw new \Exception('Transaction failed');
                 }
-                
-                // Get created application with job and company details (matching Node.js)
+
+                // Get created application with job and company details
                 $createdApplication = $applicationModel->select('applications.*, jobs.title as jobTitle, jobs.slug as jobSlug, companies.id as companyId, companies.name as companyName, companies.logo as companyLogo, companies.location as companyLocation, job_categories.name as categoryName')
                     ->join('jobs', 'jobs.id = applications.jobId', 'left')
                     ->join('companies', 'companies.id = jobs.companyId', 'left')
                     ->join('job_categories', 'job_categories.id = jobs.categoryId', 'left')
                     ->find($applicationData['id']);
-                
+
                 // Format response matching Node.js structure
                 $formattedApplication = [
                     'id' => $createdApplication['id'],
@@ -1300,7 +1307,7 @@ class Candidate extends BaseController
                         'category' => $createdApplication['categoryName'] ?? null
                     ]
                 ];
-                
+
                 return $this->respondCreated([
                     'success' => true,
                     'message' => 'Application submitted successfully',
@@ -1338,34 +1345,34 @@ class Candidate extends BaseController
 
             $applicationModel = new Application();
             $applicationModel->where('candidateId', $user->id);
-            
+
             // Get filters
             $status = $this->request->getGet('status');
             $jobId = $this->request->getGet('jobId');
-            
+
             if ($status) {
                 $applicationModel->where('status', $status);
             }
             if ($jobId) {
                 $applicationModel->where('jobId', $jobId);
             }
-            
+
             $applications = $applicationModel->orderBy('appliedAt', 'DESC')->findAll();
-            
-            // Format applications with job details (matching Node.js)
+
+            // Format applications with job details
             $jobModel = new Job();
             $companyModel = new Company();
             $categoryModel = new \App\Models\JobCategory();
-            
+
             $formattedApplications = [];
             foreach ($applications as $app) {
                 $job = $jobModel->find($app['jobId']);
                 $formattedApp = $app;
-                
+
                 if ($job) {
                     $company = $companyModel->find($job['companyId']);
                     $category = $categoryModel->find($job['categoryId']);
-                    
+
                     $formattedApp['job'] = [
                         'id' => $job['id'],
                         'title' => $job['title'],
@@ -1382,7 +1389,7 @@ class Candidate extends BaseController
                         ] : null
                     ];
                 }
-                
+
                 // Get status history (last 5)
                 $statusHistoryModel = new \App\Models\ApplicationStatusHistory();
                 $statusHistory = $statusHistoryModel->where('applicationId', $app['id'])
@@ -1390,11 +1397,11 @@ class Candidate extends BaseController
                     ->limit(5)
                     ->findAll();
                 $formattedApp['statusHistory'] = $statusHistory;
-                
+
                 $formattedApplications[] = $formattedApp;
             }
-            
-            // Calculate stats (matching Node.js)
+
+            // Calculate stats
             $stats = [
                 'total' => count($applications),
                 'pending' => count(array_filter($applications, fn($a) => ($a['status'] ?? '') === 'PENDING')),
@@ -1438,11 +1445,11 @@ class Candidate extends BaseController
         if ($applicationId === null) {
             $applicationId = $this->request->getUri()->getSegment(4);
         }
-        
+
         if (!$applicationId) {
             return $this->fail('Application ID is required', 400);
         }
-        
+
         $user = $this->request->user ?? null;
         if (!$user) {
             return $this->fail('Unauthorized', 401);
@@ -1456,26 +1463,26 @@ class Candidate extends BaseController
                 return $this->failNotFound('Application not found');
             }
 
-            // Verify application belongs to this candidate (matching Node.js)
+            // Verify application belongs to this candidate
             if ($application['candidateId'] !== $user->id) {
                 return $this->fail('You do not have access to this application', 400);
             }
-            
-            // Format application with job details (matching Node.js)
+
+            // Format application with job details
             $jobModel = new Job();
             $companyModel = new Company();
             $categoryModel = new \App\Models\JobCategory();
             $statusHistoryModel = new \App\Models\ApplicationStatusHistory();
-            
+
             $formattedApp = $application;
-            
-            // Get job details with company, category, and skills (matching Node.js)
+
+            // Get job details with company, category, and skills
             $job = $jobModel->find($application['jobId']);
             if ($job) {
                 $company = $companyModel->find($job['companyId']);
                 $category = $categoryModel->find($job['categoryId']);
-                
-                // Get job skills (matching Node.js)
+
+                // Get job skills
                 $jobSkillModel = new \App\Models\JobSkill();
                 $jobSkills = $jobSkillModel->where('jobId', $job['id'])->findAll();
                 $skills = [];
@@ -1493,7 +1500,7 @@ class Candidate extends BaseController
                         ];
                     }
                 }
-                
+
                 $formattedApp['job'] = [
                     'id' => $job['id'],
                     'title' => $job['title'],
@@ -1511,8 +1518,8 @@ class Candidate extends BaseController
                     'skills' => $skills
                 ];
             }
-            
-            // Get status history (matching Node.js)
+
+            // Get status history
             $statusHistory = $statusHistoryModel->where('applicationId', $applicationId)
                 ->orderBy('changedAt', 'DESC')
                 ->findAll();
@@ -1548,11 +1555,11 @@ class Candidate extends BaseController
         if ($applicationId === null) {
             $applicationId = $this->request->getUri()->getSegment(4);
         }
-        
+
         if (!$applicationId) {
             return $this->fail('Application ID is required', 400);
         }
-        
+
         $user = $this->request->user ?? null;
         if (!$user) {
             return $this->fail('Unauthorized', 401);
@@ -1566,30 +1573,30 @@ class Candidate extends BaseController
                 return $this->failNotFound('Application not found');
             }
 
-            // Verify application belongs to this candidate (matching Node.js)
+            // Verify application belongs to this candidate
             if ($application['candidateId'] !== $user->id) {
                 return $this->fail('You do not have access to this application', 400);
             }
 
-            // Check if already withdrawn (matching Node.js)
+            // Check if already withdrawn
             if ($application['status'] === 'WITHDRAWN') {
                 return $this->fail('Application already withdrawn', 400);
             }
 
-            // Check if accepted (cannot withdraw) (matching Node.js)
+            // Check if accepted (cannot withdraw)
             if ($application['status'] === 'ACCEPTED') {
                 return $this->fail('Cannot withdraw an accepted application', 400);
             }
 
-            // Update application with transaction (matching Node.js)
+            // Update application with transaction
             $db = \Config\Database::connect();
             $db->transStart();
-            
+
             try {
                 // Update application status
                 $applicationModel->update($applicationId, ['status' => 'WITHDRAWN']);
 
-                // Create status history (matching Node.js)
+                // Create status history
                 $statusHistoryModel = new \App\Models\ApplicationStatusHistory();
                 $statusHistoryModel->insert([
                     'id' => uniqid('status_'),
@@ -1597,13 +1604,13 @@ class Candidate extends BaseController
                     'fromStatus' => $application['status'],
                     'toStatus' => 'WITHDRAWN'
                 ]);
-                
+
                 $db->transComplete();
-                
+
                 if ($db->transStatus() === false) {
                     throw new \Exception('Transaction failed');
                 }
-                
+
                 return $this->respond([
                     'success' => true,
                     'message' => 'Application withdrawn successfully'
