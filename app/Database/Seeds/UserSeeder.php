@@ -11,16 +11,16 @@ class UserSeeder extends Seeder
     {
         $userModel = new User();
         $db = \Config\Database::connect();
-        
+
         // Generate secure password
         $plainPassword = 'Fortune@2024#Admin!';
         $hashedPassword = password_hash($plainPassword, PASSWORD_DEFAULT);
-        
+
         // Check if user already exists
         $existing = $db->table('users')->where('email', 'adusoftjeff@gmail.com')->get()->getRowArray();
-        
+
         $now = date('Y-m-d H:i:s');
-        
+
         $userData = [
             'id' => uniqid('user_'),
             'email' => 'adusoftjeff@gmail.com',
@@ -40,13 +40,13 @@ class UserSeeder extends Seeder
             'createdAt' => $now,
             'updatedAt' => $now
         ];
-        
+
         if ($existing) {
             // Update existing user (but keep the original ID)
             unset($userData['id']);
             $userData['updatedAt'] = $now;
             $userData['password'] = $hashedPassword; // Update password
-            
+
             $db->table('users')->where('email', 'adusoftjeff@gmail.com')->update($userData);
             echo "✅ Updated user: adusoftjeff@gmail.com\n";
         } else {
@@ -54,7 +54,7 @@ class UserSeeder extends Seeder
             $db->table('users')->insert($userData);
             echo "✅ Created user: adusoftjeff@gmail.com\n";
         }
-        
+
         // Display login credentials
         echo "\n";
         echo "═══════════════════════════════════════════════════════════\n";

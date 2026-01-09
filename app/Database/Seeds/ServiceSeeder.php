@@ -11,10 +11,10 @@ class ServiceSeeder extends Seeder
     {
         $serviceModel = new Service();
         $db = \Config\Database::connect();
-        
+
         // Clear existing services (optional - comment out if you want to keep existing data)
         // $serviceModel->truncate();
-        
+
         $services = [
             [
                 'id' => 'service_' . uniqid(),
@@ -244,38 +244,38 @@ class ServiceSeeder extends Seeder
                 'buttonLink' => '/contact',
             ],
         ];
-        
+
         // Insert services using database builder directly to avoid timestamp issues
         foreach ($services as $service) {
             // Check if service with this slug already exists
             $existing = $db->table('services')->where('slug', $service['slug'])->get()->getRowArray();
-            
+
             // Set timestamps - try both camelCase and snake_case
             $now = date('Y-m-d H:i:s');
-            
+
             // Remove any timestamp fields from service data - we'll add them with correct names
             unset($service['createdAt']);
             unset($service['updatedAt']);
             unset($service['created_at']);
             unset($service['updated_at']);
-            
+
             if ($existing) {
                 // Update existing service
                 unset($service['id']); // Don't update the ID
                 $service['updated_at'] = $now; // Database uses snake_case
-                
+
                 $db->table('services')->where('id', $existing['id'])->update($service);
                 echo "Updated service: {$service['title']}\n";
             } else {
                 // Insert new service - database uses snake_case for timestamps
                 $service['created_at'] = $now;
                 $service['updated_at'] = $now;
-                
+
                 $db->table('services')->insert($service);
                 echo "Created service: {$service['title']}\n";
             }
         }
-        
+
         echo "✅ Services seeded successfully!\n";
     }
 }
