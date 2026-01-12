@@ -145,7 +145,6 @@ class Candidate extends BaseController
                     }
                 }
             } catch (\Exception $e) {
-                // If languages table doesn't exist or query fails, just set empty array
                 $languages = [];
             }
 
@@ -173,7 +172,6 @@ class Candidate extends BaseController
                 'data' => $profileData
             ]);
         } catch (\Exception $e) {
-            // Log error for debugging
             log_message('error', 'Failed to retrieve candidate profile: ' . $e->getMessage());
             log_message('error', 'Stack trace: ' . $e->getTraceAsString());
 
@@ -304,7 +302,7 @@ class Candidate extends BaseController
         $db->transStart();
 
         try {
-            // Sanitize original filename and add timestamp (recommended)
+            // Sanitize original filename and add timestamp
             $originalName = $file->getClientName();
             $pathInfo = pathinfo($originalName);
             $sanitizedName = preg_replace('/[^a-zA-Z0-9._-]/', '_', $pathInfo['filename']);
@@ -336,7 +334,7 @@ class Candidate extends BaseController
                 throw new \Exception('Transaction failed');
             }
 
-            // Get created resume (matching Node.js response)
+            // Get created resume
             $createdResume = $resumeModel->find($resumeData['id']);
 
             return $this->respond([
@@ -387,7 +385,6 @@ class Candidate extends BaseController
         try {
             // Find or create skill
             $skillName = trim($data['skillName']);
-            // Generate slug exactly like Node.js: lowercase -> replace spaces with hyphen -> remove non-alphanumeric (except hyphen)
             $slug = strtolower($skillName);
             $slug = preg_replace('/\s+/', '-', $slug);
             $slug = preg_replace('/[^a-z0-9-]/', '', $slug);
@@ -423,7 +420,7 @@ class Candidate extends BaseController
                 return $this->fail('Skill already added to your profile', 409);
             }
 
-            // Add skill to candidate profile (matching Node.js - uses candidateId)
+            // Add skill to candidate profile
             $candidateSkillData = [
                 'id' => uniqid('cskill_'),
                 'candidateId' => $profile['id'],
@@ -433,7 +430,7 @@ class Candidate extends BaseController
             ];
             $candidateSkillModel->insert($candidateSkillData);
 
-            // Get created candidate skill with skill details (matching Node.js structure)
+            // Get created candidate skill with skill details
             $createdCandidateSkill = [
                 'id' => $candidateSkillData['id'],
                 'candidateId' => $candidateSkillData['candidateId'],
@@ -611,7 +608,7 @@ class Candidate extends BaseController
                     throw new \Exception('Transaction failed');
                 }
 
-                // Get created domain with domain details (matching Node.js structure)
+                // Get created domain with domain details
                 $createdDomain = [
                     'id' => $domainData['id'],
                     'candidateId' => $domainData['candidateId'],
@@ -1168,6 +1165,42 @@ class Candidate extends BaseController
      *     path="/api/candidate/applications/apply",
      *     tags={"Candidate"},
      *     summary="Apply to a job",
+     *     description="Submit a job application. If user previously withdrew, old application is archived and new one created.",
+     *     security={{"bearerAuth":{}}},
+     *     @OA\RequestBody(
+     *         required=true,
+     *         @OA\JsonContent(
+     *             required={"jobId", "coverLetter", "expectedSalary", "availableStartDate", "privacyConsent"},
+     *             @OA\Property(property="jobId", type="string", example="job_123"),
+     *             @OA\Property(property="coverLetter", type="string", minLength=50),
+     *             @OA\Property(property="expectedSalary", type="string", example="KES 50,000 - 70,000"),
+     *             @OA\Property(property="availableStartDate", type="string", format="date"),
+     *             @OA\Property(property="portfolioUrl", type="string", format="url"),
+     *             @OA\Property(property="resumeUrl", type="string"),
+     *             @OA\Property(property="privacyConsent", type="boolean", example=true)
+     *         )
+     *     ),
+     *     @OA\Response(response="201", description="Application submitted successfully"),
+     *     @OA\Response(response="400", description="Validation error or job not accepting applications"),
+     *     @OA\Response(response="404", description="Job or candidate profile not found"),
+     *     @OA\Response(response="409", description="Already applied (active application exists)")
+     * )
+     */
+    /**
+     * @OA\Post(
+     *     path="/api/candidate/applications/apply",
+     *     tags={"Candidate"},
+     *     summary="Apply to a job",
+     *     description="Submit job application. If previously withdrawn, marks old app as inactive.",
+     *     security={{"bearerAuth":{}}},
+     *     @OA\Response(response="201", description="Application submitted")
+     * )
+     */
+    /**
+     * @OA\Post(
+     *     path="/api/candidate/applications/apply",
+     *     tags={"Candidate"},
+     *     summary="Apply to a job",
      *     security={{"bearerAuth":{}}},
      *     @OA\Response(response="201", description="Application submitted")
      * )
@@ -1185,60 +1218,72 @@ class Candidate extends BaseController
         try {
             // Validate privacy consent
             if (!isset($data['privacyConsent']) || !$data['privacyConsent']) {
-                return $this->fail('You must accept the privacy policy to submit your application', 400);
+                return $this->fail('You must accept the privacy policy', 400);
             }
 
             // Get candidate profile
             $profileModel = new CandidateProfile();
             $profile = $profileModel->where('userId', $user->id)->first();
-
             if (!$profile) {
-                return $this->failNotFound('Candidate profile not found. Please complete your profile first.');
+                return $this->failNotFound('Candidate profile not found');
             }
 
             // Check if job exists and is active
             $jobModel = new Job();
             $job = $jobModel->find($data['jobId']);
-
             if (!$job) {
                 return $this->failNotFound('Job not found');
             }
-
             if ($job['status'] !== 'ACTIVE') {
-                return $this->fail('This job is not currently accepting applications', 400);
+                return $this->fail('Job not accepting applications', 400);
             }
 
-            // Check if already applied
-            $existing = $applicationModel->where('jobId', $data['jobId'])
+            // ✅ FIX: Check for ACTIVE applications only
+            $existingActiveApp = $applicationModel
+                ->where('jobId', $data['jobId'])
                 ->where('candidateId', $user->id)
+                ->where('isActive', true)
                 ->first();
 
-            if ($existing) {
+            // Block if active non-withdrawn application exists
+            if ($existingActiveApp && $existingActiveApp['status'] !== 'WITHDRAWN') {
                 return $this->fail('You have already applied to this job', 409);
             }
 
-            // Use resume URL from DTO, fallback to profile, validate exists
+            // Validate resume
             $finalResumeUrl = $data['resumeUrl'] ?? $profile['resumeUrl'] ?? null;
             if (!$finalResumeUrl) {
-                return $this->fail('Please upload your resume before applying to jobs', 400);
+                return $this->fail('Please upload resume before applying', 400);
             }
 
-            // Use portfolio from DTO if provided, otherwise from profile
             $finalPortfolioUrl = $data['portfolioUrl'] ?? $profile['portfolioUrl'] ?? null;
 
-            // Parse and validate available start date
-            $parsedStartDate = isset($data['availableStartDate']) ? date('Y-m-d H:i:s', strtotime($data['availableStartDate'])) : date('Y-m-d H:i:s');
-            $today = date('Y-m-d');
-            if (date('Y-m-d', strtotime($parsedStartDate)) < $today) {
-                return $this->fail('Available start date cannot be in the past', 400);
+            // Validate start date
+            $parsedStartDate = isset($data['availableStartDate'])
+                ? date('Y-m-d H:i:s', strtotime($data['availableStartDate']))
+                : date('Y-m-d H:i:s');
+
+            if (date('Y-m-d', strtotime($parsedStartDate)) < date('Y-m-d')) {
+                return $this->fail('Start date cannot be in the past', 400);
             }
 
-            // Use transaction to ensure both operations succeed or fail together
+            // Use transaction
             $db = \Config\Database::connect();
             $db->transStart();
 
             try {
-                // Create application
+                // Mark withdrawn app as inactive using direct query
+                if ($existingActiveApp && $existingActiveApp['status'] === 'WITHDRAWN') {
+                    // Use query builder to force update even if value doesn't change
+                    $db->table('applications')
+                        ->where('id', $existingActiveApp['id'])
+                        ->set(['isActive' => false, 'updatedAt' => date('Y-m-d H:i:s')])
+                        ->update();
+
+                    log_message('info', "Marked withdrawn application {$existingActiveApp['id']} as inactive");
+                }
+
+                // Create NEW application
                 $applicationData = [
                     'id' => uniqid('app_'),
                     'jobId' => $data['jobId'],
@@ -1250,15 +1295,17 @@ class Candidate extends BaseController
                     'privacyConsent' => $data['privacyConsent'],
                     'availableStartDate' => $parsedStartDate,
                     'status' => 'PENDING',
+                    'isActive' => true,
                     'appliedAt' => date('Y-m-d H:i:s')
                 ];
                 $applicationModel->insert($applicationData);
 
-                // Update job application count
-                $currentCount = $job['applicationCount'] ?? 0;
-                $jobModel->update($data['jobId'], [
-                    'applicationCount' => $currentCount + 1
-                ]);
+                // Update job count only if not replacing withdrawn
+                if (!$existingActiveApp || $existingActiveApp['status'] !== 'WITHDRAWN') {
+                    $jobModel->update($data['jobId'], [
+                        'applicationCount' => ($job['applicationCount'] ?? 0) + 1
+                    ]);
+                }
 
                 // Create status history
                 $statusHistoryModel = new \App\Models\ApplicationStatusHistory();
@@ -1269,19 +1316,19 @@ class Candidate extends BaseController
                 ]);
 
                 $db->transComplete();
-
                 if ($db->transStatus() === false) {
                     throw new \Exception('Transaction failed');
                 }
 
-                // Get created application with job and company details
-                $createdApplication = $applicationModel->select('applications.*, jobs.title as jobTitle, jobs.slug as jobSlug, companies.id as companyId, companies.name as companyName, companies.logo as companyLogo, companies.location as companyLocation, job_categories.name as categoryName')
+                // Fetch created application with details
+                $createdApplication = $applicationModel
+                    ->select('applications.*, jobs.title as jobTitle, jobs.slug as jobSlug, companies.id as companyId, companies.name as companyName, companies.logo as companyLogo, companies.location as companyLocation, job_categories.name as categoryName')
                     ->join('jobs', 'jobs.id = applications.jobId', 'left')
                     ->join('companies', 'companies.id = jobs.companyId', 'left')
                     ->join('job_categories', 'job_categories.id = jobs.categoryId', 'left')
                     ->find($applicationData['id']);
 
-                // Format response matching Node.js structure
+                // Format response
                 $formattedApplication = [
                     'id' => $createdApplication['id'],
                     'jobId' => $createdApplication['jobId'],
@@ -1315,26 +1362,66 @@ class Candidate extends BaseController
                 ]);
             } catch (\Exception $e) {
                 $db->transRollback();
+                log_message('error', 'Apply transaction error: ' . $e->getMessage());
                 throw $e;
             }
         } catch (\Exception $e) {
+            log_message('error', 'Apply error: ' . $e->getMessage());
             return $this->respond([
                 'success' => false,
-                'message' => 'Failed to submit application. Please try again.',
+                'message' => 'Failed to submit application',
                 'data' => []
             ], 500);
         }
     }
-
     /**
      * @OA\Get(
      *     path="/api/candidate/applications",
      *     tags={"Candidate"},
-     *     summary="Get all my applications",
+     *     summary="Get all candidate applications",
+     *     description="Retrieve all applications with stats. Withdrawn applications are included but counted separately.",
      *     security={{"bearerAuth":{}}},
-     *     @OA\Response(response="200", description="Applications retrieved")
+     *     @OA\Parameter(
+     *         name="status",
+     *         in="query",
+     *         description="Filter by application status",
+     *         @OA\Schema(type="string", enum={"PENDING", "REVIEWED", "SHORTLISTED", "INTERVIEWED", "OFFERED", "ACCEPTED", "REJECTED", "WITHDRAWN"})
+     *     ),
+     *     @OA\Parameter(
+     *         name="jobId",
+     *         in="query",
+     *         description="Filter by job ID",
+     *         @OA\Schema(type="string")
+     *     ),
+     *     @OA\Response(
+     *         response="200",
+     *         description="Applications retrieved successfully",
+     *         @OA\JsonContent(
+     *             @OA\Property(property="success", type="boolean", example=true),
+     *             @OA\Property(property="message", type="string"),
+     *             @OA\Property(
+     *                 property="data",
+     *                 type="object",
+     *                 @OA\Property(property="applications", type="array", @OA\Items(type="object")),
+     *                 @OA\Property(
+     *                     property="stats",
+     *                     type="object",
+     *                     @OA\Property(property="total", type="integer", description="Count of active applications (excludes withdrawn)"),
+     *                     @OA\Property(property="pending", type="integer"),
+     *                     @OA\Property(property="reviewed", type="integer"),
+     *                     @OA\Property(property="shortlisted", type="integer"),
+     *                     @OA\Property(property="interview", type="integer"),
+     *                     @OA\Property(property="offered", type="integer"),
+     *                     @OA\Property(property="accepted", type="integer"),
+     *                     @OA\Property(property="rejected", type="integer"),
+     *                     @OA\Property(property="withdrawn", type="integer")
+     *                 )
+     *             )
+     *         )
+     *     )
      * )
      */
+
     public function getApplications()
     {
         try {
@@ -1344,9 +1431,12 @@ class Candidate extends BaseController
             }
 
             $applicationModel = new Application();
-            $applicationModel->where('candidateId', $user->id);
 
-            // Get filters
+            // Only fetch ACTIVE applications for candidates
+            $applicationModel->where('candidateId', $user->id)
+                ->where('isActive', true);  // ← Filter out inactive (old withdrawn)
+
+            // Apply filters
             $status = $this->request->getGet('status');
             $jobId = $this->request->getGet('jobId');
 
@@ -1359,10 +1449,11 @@ class Candidate extends BaseController
 
             $applications = $applicationModel->orderBy('appliedAt', 'DESC')->findAll();
 
-            // Format applications with job details
+            // Enrich with job details
             $jobModel = new Job();
             $companyModel = new Company();
             $categoryModel = new \App\Models\JobCategory();
+            $statusHistoryModel = new \App\Models\ApplicationStatusHistory();
 
             $formattedApplications = [];
             foreach ($applications as $app) {
@@ -1390,8 +1481,7 @@ class Candidate extends BaseController
                     ];
                 }
 
-                // Get status history (last 5)
-                $statusHistoryModel = new \App\Models\ApplicationStatusHistory();
+                // Status history
                 $statusHistory = $statusHistoryModel->where('applicationId', $app['id'])
                     ->orderBy('changedAt', 'DESC')
                     ->limit(5)
@@ -1401,16 +1491,19 @@ class Candidate extends BaseController
                 $formattedApplications[] = $formattedApp;
             }
 
-            // Calculate stats
+            // Calculate stats from ACTIVE applications only
+            $activeStatuses = ['PENDING', 'REVIEWED', 'SHORTLISTED', 'INTERVIEWED', 'OFFERED'];
+
             $stats = [
-                'total' => count($applications),
+                'total' => count(array_filter($applications, fn($a) => in_array($a['status'] ?? '', $activeStatuses))),
                 'pending' => count(array_filter($applications, fn($a) => ($a['status'] ?? '') === 'PENDING')),
                 'reviewed' => count(array_filter($applications, fn($a) => ($a['status'] ?? '') === 'REVIEWED')),
                 'shortlisted' => count(array_filter($applications, fn($a) => ($a['status'] ?? '') === 'SHORTLISTED')),
-                'interview' => count(array_filter($applications, fn($a) => ($a['status'] ?? '') === 'INTERVIEW')),
+                'interview' => count(array_filter($applications, fn($a) => ($a['status'] ?? '') === 'INTERVIEWED')),
                 'offered' => count(array_filter($applications, fn($a) => ($a['status'] ?? '') === 'OFFERED')),
                 'accepted' => count(array_filter($applications, fn($a) => ($a['status'] ?? '') === 'ACCEPTED')),
-                'rejected' => count(array_filter($applications, fn($a) => ($a['status'] ?? '') === 'REJECTED'))
+                'rejected' => count(array_filter($applications, fn($a) => ($a['status'] ?? '') === 'REJECTED')),
+                'withdrawn' => count(array_filter($applications, fn($a) => ($a['status'] ?? '') === 'WITHDRAWN'))
             ];
 
             return $this->respond([
@@ -1422,6 +1515,7 @@ class Candidate extends BaseController
                 ]
             ]);
         } catch (\Exception $e) {
+            log_message('error', 'Get applications error: ' . $e->getMessage());
             return $this->respond([
                 'success' => false,
                 'message' => 'Failed to retrieve applications',
