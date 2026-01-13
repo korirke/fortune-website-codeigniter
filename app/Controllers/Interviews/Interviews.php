@@ -45,25 +45,6 @@ class Interviews extends BaseController
      *     tags={"Interviews"},
      *     summary="Schedule a new interview",
      *     security={{"bearerAuth":{}}},
-     *     @OA\RequestBody(
-     *         required=true,
-     *         @OA\JsonContent(
-     *             required={"applicationId", "jobId", "candidateId", "scheduledAt", "type"},
-     *             @OA\Property(property="applicationId", type="string", example="app_123"),
-     *             @OA\Property(property="jobId", type="string", example="job_456"),
-     *             @OA\Property(property="candidateId", type="string", example="user_789"),
-     *             @OA\Property(property="scheduledAt", type="string", format="date-time", example="2024-12-25T10:00:00"),
-     *             @OA\Property(property="duration", type="integer", example=60),
-     *             @OA\Property(property="type", type="string", enum={"PHONE", "VIDEO", "IN_PERSON", "TECHNICAL", "HR_SCREENING", "PANEL"}),
-     *             @OA\Property(property="location", type="string", example="Office Room 301"),
-     *             @OA\Property(property="meetingLink", type="string", example="https://meet.google.com/abc-defg-hij"),
-     *             @OA\Property(property="meetingId", type="string", example="123-456-789"),
-     *             @OA\Property(property="meetingPassword", type="string", example="secret123"),
-     *             @OA\Property(property="interviewerName", type="string", example="John Smith"),
-     *             @OA\Property(property="interviewerId", type="string", example="user_999"),
-     *             @OA\Property(property="notes", type="string", example="Technical interview for backend position")
-     *         )
-     *     ),
      *     @OA\Response(response="201", description="Interview scheduled successfully")
      * )
      */
@@ -180,11 +161,6 @@ class Interviews extends BaseController
      *     tags={"Interviews"},
      *     summary="Search interviews with filters",
      *     security={{"bearerAuth":{}}},
-     *     @OA\Parameter(name="query", in="query", required=false, @OA\Schema(type="string")),
-     *     @OA\Parameter(name="status", in="query", required=false, @OA\Schema(type="string")),
-     *     @OA\Parameter(name="type", in="query", required=false, @OA\Schema(type="string")),
-     *     @OA\Parameter(name="page", in="query", required=false, @OA\Schema(type="integer")),
-     *     @OA\Parameter(name="limit", in="query", required=false, @OA\Schema(type="integer")),
      *     @OA\Response(response="200", description="Interviews retrieved")
      * )
      */
@@ -382,7 +358,6 @@ class Interviews extends BaseController
                 return $this->failNotFound('Interview not found');
             }
 
-            // Authorization check (same as update)
             $canDelete = false;
             if (in_array($user->role, ['SUPER_ADMIN', 'HR_MANAGER'])) {
                 $canDelete = true;
@@ -595,125 +570,228 @@ class Interviews extends BaseController
     }
 
     /**
-     * Send interview notification email
+     * Interview emails from recruitment inbox with congratulations message
      */
     private function sendInterviewNotification($interview, $type = 'scheduled')
     {
         try {
-            $candidate = $interview['candidate'];
-            $job = $interview['job'];
+            $candidate = $interview['candidate'] ?? [];
+            $job = $interview['job'] ?? [];
 
-            $candidateName = $candidate['firstName'] . ' ' . $candidate['lastName'];
-            $scheduledDate = date('F j, Y \a\t g:i A', strtotime($interview['scheduledAt']));
+            // Debug logging
+            log_message('info', 'sendInterviewNotification - Type: ' . $type);
+            log_message('info', 'Interview data: ' . json_encode($interview));
+            log_message('info', 'Candidate email: ' . ($candidate['email'] ?? 'MISSING'));
+            log_message('info', 'Job title: ' . ($job['title'] ?? 'MISSING'));
 
-            $subject = '';
-            $message = '';
+            // Validate required data
+            if (empty($candidate['email'])) {
+                log_message('error', 'Candidate email missing in interview notification');
+                return;
+            }
+
+            if (empty($job['title'])) {
+                log_message('error', 'Job title missing in interview notification');
+                return;
+            }
+
+            $candidateName = trim(($candidate['firstName'] ?? '') . ' ' . ($candidate['lastName'] ?? ''));
+            if ($candidateName === '') {
+                $candidateName = 'Candidate';
+            }
+
+            $scheduledAt = $interview['scheduledAt'] ?? null;
+            if (!$scheduledAt) {
+                log_message('error', 'Scheduled date missing in interview notification');
+                return;
+            }
+
+            $scheduledDateHuman = date('F j, Y \a\t g:i A', strtotime($scheduledAt));
 
             switch ($type) {
                 case 'scheduled':
-                    $subject = 'Interview Scheduled - ' . $job['title'];
-                    $message = $this->buildScheduledEmail($candidateName, $job['title'], $scheduledDate, $interview);
-                    break;
-                case 'reminder':
-                    $subject = 'Interview Reminder - ' . $job['title'];
-                    $message = $this->buildReminderEmail($candidateName, $job['title'], $scheduledDate, $interview);
-                    break;
-                case 'status_changed':
-                    $subject = 'Interview Status Update - ' . $job['title'];
-                    $message = $this->buildStatusChangeEmail($candidateName, $job['title'], $interview['status']);
-                    break;
-            }
+                    log_message('info', 'Sending interview invitation email to: ' . $candidate['email']);
 
-            $this->emailHelper->sendEmail(
-                $candidate['email'],
-                $subject,
-                $message
-            );
+                    // ✅ Calendar invite (.ics) handled by EmailHelper
+                    $emailResult = $this->emailHelper->sendInterviewInvitation(
+                        $candidate['email'],
+                        $candidateName,
+                        $job['title'],
+                        $scheduledAt,
+                        [
+                            'type' => $interview['type'] ?? 'VIDEO',
+                            'duration' => $interview['duration'] ?? 60,
+                            'meetingLink' => $interview['meetingLink'] ?? null,
+                            'location' => $interview['location'] ?? null,
+                            'notes' => $interview['notes'] ?? null,
+                            'timezone' => 'Africa/Nairobi'
+                        ]
+                    );
+
+                    log_message('info', 'Interview invitation result: ' . json_encode($emailResult));
+                    break;
+
+                case 'reminder':
+                    log_message('info', 'Sending reminder email to: ' . $candidate['email']);
+
+                    $subject = 'Interview Reminder - ' . $job['title'];
+                    $message = $this->buildReminderEmail($candidateName, $job['title'], $scheduledDateHuman, $interview);
+
+                    $emailResult = $this->emailHelper->sendRecruitmentEmail($candidate['email'], $subject, $message, true);
+
+                    log_message('info', 'Reminder email result: ' . json_encode($emailResult));
+                    break;
+
+                case 'status_changed':
+                    log_message('info', 'Sending status change email to: ' . $candidate['email']);
+
+                    $subject = 'Interview Status Update - ' . $job['title'];
+                    $message = $this->buildStatusChangeEmail($candidateName, $job['title'], $interview['status'] ?? 'UNKNOWN');
+
+                    $emailResult = $this->emailHelper->sendRecruitmentEmail($candidate['email'], $subject, $message, true);
+
+                    log_message('info', 'Status change email result: ' . json_encode($emailResult));
+                    break;
+
+                default:
+                    log_message('warning', 'Unknown notification type: ' . $type);
+            }
         } catch (\Exception $e) {
             log_message('error', 'Failed to send interview notification: ' . $e->getMessage());
+            log_message('error', 'Stack trace: ' . $e->getTraceAsString());
         }
     }
 
-    /**
-     * Build scheduled interview email
-     */
-    private function buildScheduledEmail($candidateName, $jobTitle, $scheduledDate, $interview)
-    {
-        $interviewType = str_replace('_', ' ', $interview['type']);
-
-        $html = "<h2>Interview Scheduled</h2>";
-        $html .= "<p>Dear {$candidateName},</p>";
-        $html .= "<p>We are pleased to inform you that your interview has been scheduled.</p>";
-        $html .= "<div style='background: #f5f5f5; padding: 15px; margin: 20px 0; border-left: 4px solid #1b90ba;'>";
-        $html .= "<p><strong>Position:</strong> {$jobTitle}</p>";
-        $html .= "<p><strong>Date & Time:</strong> {$scheduledDate}</p>";
-        $html .= "<p><strong>Interview Type:</strong> {$interviewType}</p>";
-        $html .= "<p><strong>Duration:</strong> {$interview['duration']} minutes</p>";
-
-        if ($interview['type'] === 'VIDEO' && $interview['meetingLink']) {
-            $html .= "<p><strong>Meeting Link:</strong> <a href='{$interview['meetingLink']}'>{$interview['meetingLink']}</a></p>";
-            if ($interview['meetingId']) {
-                $html .= "<p><strong>Meeting ID:</strong> {$interview['meetingId']}</p>";
-            }
-            if ($interview['meetingPassword']) {
-                $html .= "<p><strong>Password:</strong> {$interview['meetingPassword']}</p>";
-            }
-        }
-
-        if ($interview['type'] === 'IN_PERSON' && $interview['location']) {
-            $html .= "<p><strong>Location:</strong> {$interview['location']}</p>";
-        }
-
-        if ($interview['interviewerName']) {
-            $html .= "<p><strong>Interviewer:</strong> {$interview['interviewerName']}</p>";
-        }
-
-        if ($interview['notes']) {
-            $html .= "<p><strong>Notes:</strong> {$interview['notes']}</p>";
-        }
-
-        $html .= "</div>";
-        $html .= "<p>Please be prepared and join on time. If you need to reschedule, please contact us as soon as possible.</p>";
-        $html .= "<p>Good luck!</p>";
-
-        return $html;
-    }
-
-    /**
-     * Build reminder email
-     */
     private function buildReminderEmail($candidateName, $jobTitle, $scheduledDate, $interview)
     {
-        $html = "<h2>Interview Reminder</h2>";
-        $html .= "<p>Dear {$candidateName},</p>";
-        $html .= "<p>This is a friendly reminder about your upcoming interview:</p>";
-        $html .= "<div style='background: #fff3cd; padding: 15px; margin: 20px 0; border-left: 4px solid #ffc107;'>";
-        $html .= "<p><strong>Position:</strong> {$jobTitle}</p>";
-        $html .= "<p><strong>Date & Time:</strong> {$scheduledDate}</p>";
+        $safeJobTitle = htmlspecialchars($jobTitle);
+        $safeScheduledDate = htmlspecialchars($scheduledDate);
+        
+        // Determine if online or physical
+        $type = $interview['type'] ?? 'VIDEO';
+        $isOnline = in_array($type, ['VIDEO', 'PHONE']);
+        $category = $isOnline ? 'Online Interview' : ' Physical Interview';
 
-        if ($interview['type'] === 'VIDEO' && $interview['meetingLink']) {
-            $html .= "<p><strong>Meeting Link:</strong> <a href='{$interview['meetingLink']}'>{$interview['meetingLink']}</a></p>";
+        $html = "<!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset='utf-8'>
+            <style>
+                body { font-family: Arial, sans-serif; line-height: 1.6; color: #222; }
+                .container { max-width: 700px; margin: 0 auto; padding: 22px; }
+                .header { background: #ffc107; color: #000; padding: 18px 20px; border-radius: 8px 8px 0 0; }
+                .content { background: #f8f9fa; padding: 20px; border-radius: 0 0 8px 8px; }
+                .card { background: #fff; border: 1px solid #e9ecef; border-radius: 8px; padding: 16px; margin: 14px 0; }
+                .badge { display: inline-block; padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; margin-bottom: 10px; background: " . ($isOnline ? "#d1ecf1; color: #0c5460;" : "#fff3cd; color: #856404;") . " }
+                .footer { margin-top: 18px; font-size: 12px; color: #6c757d; text-align: center; }
+            </style>
+        </head>
+        <body>
+            <div class='container'>
+                <div class='header'>
+                    <h2 style='margin:0;'>⏰ Interview Reminder</h2>
+                    <p style='margin:6px 0 0 0;'>Fortune Kenya Recruitment</p>
+                </div>
+
+                <div class='content'>
+                    <p>Dear {$candidateName},</p>
+
+                    <p>This is a friendly reminder about your upcoming interview:</p>
+
+                    <div class='card'>
+                        <span class='badge'>{$category}</span>
+                        <h3 style='margin-top:10px;'>Interview Details</h3>
+                        <p><strong>Position:</strong> {$safeJobTitle}</p>
+                        <p><strong>Date & Time:</strong> {$safeScheduledDate}</p>";
+
+        if ($isOnline && !empty($interview['meetingLink'])) {
+            $html .= "<p><strong>Meeting Link:</strong> <a href='{$interview['meetingLink']}' style='color: #0b5ed7;'>{$interview['meetingLink']}</a></p>";
         }
 
-        if ($interview['type'] === 'IN_PERSON' && $interview['location']) {
-            $html .= "<p><strong>Location:</strong> {$interview['location']}</p>";
+        if (!$isOnline && !empty($interview['location'])) {
+            $html .= "<p><strong>Location:</strong> " . htmlspecialchars($interview['location']) . "</p>";
         }
 
-        $html .= "</div>";
-        $html .= "<p>We look forward to speaking with you!</p>";
+        $html .= "</div>
+
+                    <div class='card'>
+                        <h3 style='margin-top:0;'>Important Reminders</h3>
+                        <ul>
+                            <li>Please join at least <strong>5 minutes early</strong>.</li>";
+        
+        if ($isOnline) {
+            $html .= "<li>Ensure you have <strong>stable internet</strong> and working <strong>microphone/camera</strong>.</li>";
+        } else {
+            $html .= "<li>Plan your route and arrive on time.</li>";
+        }
+
+        $html .= "
+                        </ul>
+                    </div>
+
+                    <p>Kind regards,<br>
+                    <strong>Fortune Kenya Recruitment Team</strong><br>
+                    headhunting@fortunekenya.com</p>
+
+                    <div class='footer'>
+                        <p>This is an automated email. Please do not reply directly to this message.</p>
+                    </div>
+                </div>
+            </div>
+        </body>
+        </html>";
 
         return $html;
     }
 
-    /**
-     * Build status change email
-     */
     private function buildStatusChangeEmail($candidateName, $jobTitle, $newStatus)
     {
-        $html = "<h2>Interview Status Update</h2>";
-        $html .= "<p>Dear {$candidateName},</p>";
-        $html .= "<p>The status of your interview for <strong>{$jobTitle}</strong> has been updated to: <strong>{$newStatus}</strong></p>";
-        $html .= "<p>If you have any questions, please don't hesitate to contact us.</p>";
+        $safeStatus = htmlspecialchars(str_replace('_', ' ', (string) $newStatus));
+        $safeJobTitle = htmlspecialchars($jobTitle);
+
+        $html = "<!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset='utf-8'>
+            <style>
+                body { font-family: Arial, sans-serif; line-height: 1.6; color: #222; }
+                .container { max-width: 700px; margin: 0 auto; padding: 22px; }
+                .header { background: #6c757d; color: #fff; padding: 18px 20px; border-radius: 8px 8px 0 0; }
+                .content { background: #f8f9fa; padding: 20px; border-radius: 0 0 8px 8px; }
+                .card { background: #fff; border: 1px solid #e9ecef; border-radius: 8px; padding: 16px; margin: 14px 0; }
+                .footer { margin-top: 18px; font-size: 12px; color: #6c757d; text-align: center; }
+            </style>
+        </head>
+        <body>
+            <div class='container'>
+                <div class='header'>
+                    <h2 style='margin:0;'>Interview Status Update</h2>
+                    <p style='margin:6px 0 0 0;'>Fortune Kenya Recruitment</p>
+                </div>
+
+                <div class='content'>
+                    <p>Dear {$candidateName},</p>
+
+                    <p>The status of your interview for <strong>{$safeJobTitle}</strong> has been updated.</p>
+
+                    <div class='card'>
+                        <h3 style='margin-top:0;'>New Status</h3>
+                        <p style='font-size: 18px; font-weight: bold; color: #0b5ed7;'>{$safeStatus}</p>
+                    </div>
+
+                    <p>If you have any questions, please contact us at <strong>headhunting@fortunekenya.com</strong>.</p>
+
+                    <p>Kind regards,<br>
+                    <strong>Fortune Kenya Recruitment Team</strong><br>
+                    headhunting@fortunekenya.com</p>
+
+                    <div class='footer'>
+                        <p>This is an automated email. Please do not reply directly to this message.</p>
+                    </div>
+                </div>
+            </div>
+        </body>
+        </html>";
 
         return $html;
     }
