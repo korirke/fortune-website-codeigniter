@@ -1164,43 +1164,7 @@ class Candidate extends BaseController
      * @OA\Post(
      *     path="/api/candidate/applications/apply",
      *     tags={"Candidate"},
-     *     summary="Apply to a job",
-     *     description="Submit a job application. If user previously withdrew, old application is archived and new one created.",
-     *     security={{"bearerAuth":{}}},
-     *     @OA\RequestBody(
-     *         required=true,
-     *         @OA\JsonContent(
-     *             required={"jobId", "coverLetter", "expectedSalary", "availableStartDate", "privacyConsent"},
-     *             @OA\Property(property="jobId", type="string", example="job_123"),
-     *             @OA\Property(property="coverLetter", type="string", minLength=50),
-     *             @OA\Property(property="expectedSalary", type="string", example="KES 50,000 - 70,000"),
-     *             @OA\Property(property="availableStartDate", type="string", format="date"),
-     *             @OA\Property(property="portfolioUrl", type="string", format="url"),
-     *             @OA\Property(property="resumeUrl", type="string"),
-     *             @OA\Property(property="privacyConsent", type="boolean", example=true)
-     *         )
-     *     ),
-     *     @OA\Response(response="201", description="Application submitted successfully"),
-     *     @OA\Response(response="400", description="Validation error or job not accepting applications"),
-     *     @OA\Response(response="404", description="Job or candidate profile not found"),
-     *     @OA\Response(response="409", description="Already applied (active application exists)")
-     * )
-     */
-    /**
-     * @OA\Post(
-     *     path="/api/candidate/applications/apply",
-     *     tags={"Candidate"},
-     *     summary="Apply to a job",
-     *     description="Submit job application. If previously withdrawn, marks old app as inactive.",
-     *     security={{"bearerAuth":{}}},
-     *     @OA\Response(response="201", description="Application submitted")
-     * )
-     */
-    /**
-     * @OA\Post(
-     *     path="/api/candidate/applications/apply",
-     *     tags={"Candidate"},
-     *     summary="Apply to a job",
+     *     summary="Apply to a job - SENDS EMAIL TO BOTH CANDIDATE AND ADMIN",
      *     security={{"bearerAuth":{}}},
      *     @OA\Response(response="201", description="Application submitted")
      * )
@@ -1238,7 +1202,11 @@ class Candidate extends BaseController
                 return $this->fail('Job not accepting applications', 400);
             }
 
-            // ✅ FIX: Check for ACTIVE applications only
+            // Get company details
+            $companyModel = new Company();
+            $company = $companyModel->find($job['companyId']);
+
+            // Check for ACTIVE applications only
             $existingActiveApp = $applicationModel
                 ->where('jobId', $data['jobId'])
                 ->where('candidateId', $user->id)
@@ -1272,9 +1240,8 @@ class Candidate extends BaseController
             $db->transStart();
 
             try {
-                // Mark withdrawn app as inactive using direct query
+                // Mark withdrawn app as inactive
                 if ($existingActiveApp && $existingActiveApp['status'] === 'WITHDRAWN') {
-                    // Use query builder to force update even if value doesn't change
                     $db->table('applications')
                         ->where('id', $existingActiveApp['id'])
                         ->set(['isActive' => false, 'updatedAt' => date('Y-m-d H:i:s')])
@@ -1320,6 +1287,60 @@ class Candidate extends BaseController
                     throw new \Exception('Transaction failed');
                 }
 
+                // ✅ SEND EMAILS
+
+                // 1. Email to CANDIDATE (from headhunting@fortunekenya.com)
+                $emailHelper = new EmailHelper();
+                $candidateEmailData = [
+                    'applicationId' => $applicationData['id'],
+                    'candidate' => [
+                        'firstName' => $user->firstName ?? '',
+                        'lastName' => $user->lastName ?? '',
+                        'email' => $user->email ?? ''
+                    ],
+                    'job' => [
+                        'title' => $job['title'] ?? 'Position',
+                        'company' => [
+                            'name' => $company['name'] ?? 'Company'
+                        ]
+                    ],
+                    'expectedSalary' => $applicationData['expectedSalary'],
+                    'availableStartDate' => $applicationData['availableStartDate'],
+                    'appliedAt' => $applicationData['appliedAt']
+                ];
+                
+                $candidateEmailResult = $emailHelper->sendApplicationReceivedEmail($candidateEmailData);
+                log_message('info', 'Candidate email result: ' . json_encode($candidateEmailResult));
+
+                // 2. Email to ADMIN (from sales@fortunekenya.com to headhunting@fortunekenya.com)
+                $adminEmailData = [
+                    'applicationId' => $applicationData['id'],
+                    'candidate' => [
+                        'firstName' => $user->firstName ?? '',
+                        'lastName' => $user->lastName ?? '',
+                        'email' => $user->email ?? '',
+                        'phone' => $user->phone ?? 'N/A'
+                    ],
+                    'profile' => [
+                        'title' => $profile['title'] ?? 'N/A',
+                        'location' => $profile['location'] ?? 'N/A',
+                        'experienceYears' => $profile['experienceYears'] ?? 'N/A',
+                        'resumeUrl' => $finalResumeUrl
+                    ],
+                    'job' => [
+                        'title' => $job['title'] ?? 'Position',
+                        'company' => [
+                            'name' => $company['name'] ?? 'Company'
+                        ]
+                    ],
+                    'expectedSalary' => $applicationData['expectedSalary'],
+                    'availableStartDate' => $applicationData['availableStartDate'],
+                    'coverLetter' => $applicationData['coverLetter']
+                ];
+                
+                $adminEmailResult = $emailHelper->notifyAdminNewApplication($adminEmailData);
+                log_message('info', 'Admin email result: ' . json_encode($adminEmailResult));
+
                 // Fetch created application with details
                 $createdApplication = $applicationModel
                     ->select('applications.*, jobs.title as jobTitle, jobs.slug as jobSlug, companies.id as companyId, companies.name as companyName, companies.logo as companyLogo, companies.location as companyLocation, job_categories.name as categoryName')
@@ -1357,7 +1378,7 @@ class Candidate extends BaseController
 
                 return $this->respondCreated([
                     'success' => true,
-                    'message' => 'Application submitted successfully',
+                    'message' => 'Application submitted successfully. Confirmation emails sent.',
                     'data' => $formattedApplication
                 ]);
             } catch (\Exception $e) {
@@ -1374,54 +1395,16 @@ class Candidate extends BaseController
             ], 500);
         }
     }
+
     /**
      * @OA\Get(
      *     path="/api/candidate/applications",
      *     tags={"Candidate"},
      *     summary="Get all candidate applications",
-     *     description="Retrieve all applications with stats. Withdrawn applications are included but counted separately.",
      *     security={{"bearerAuth":{}}},
-     *     @OA\Parameter(
-     *         name="status",
-     *         in="query",
-     *         description="Filter by application status",
-     *         @OA\Schema(type="string", enum={"PENDING", "REVIEWED", "SHORTLISTED", "INTERVIEWED", "OFFERED", "ACCEPTED", "REJECTED", "WITHDRAWN"})
-     *     ),
-     *     @OA\Parameter(
-     *         name="jobId",
-     *         in="query",
-     *         description="Filter by job ID",
-     *         @OA\Schema(type="string")
-     *     ),
-     *     @OA\Response(
-     *         response="200",
-     *         description="Applications retrieved successfully",
-     *         @OA\JsonContent(
-     *             @OA\Property(property="success", type="boolean", example=true),
-     *             @OA\Property(property="message", type="string"),
-     *             @OA\Property(
-     *                 property="data",
-     *                 type="object",
-     *                 @OA\Property(property="applications", type="array", @OA\Items(type="object")),
-     *                 @OA\Property(
-     *                     property="stats",
-     *                     type="object",
-     *                     @OA\Property(property="total", type="integer", description="Count of active applications (excludes withdrawn)"),
-     *                     @OA\Property(property="pending", type="integer"),
-     *                     @OA\Property(property="reviewed", type="integer"),
-     *                     @OA\Property(property="shortlisted", type="integer"),
-     *                     @OA\Property(property="interview", type="integer"),
-     *                     @OA\Property(property="offered", type="integer"),
-     *                     @OA\Property(property="accepted", type="integer"),
-     *                     @OA\Property(property="rejected", type="integer"),
-     *                     @OA\Property(property="withdrawn", type="integer")
-     *                 )
-     *             )
-     *         )
-     *     )
+     *     @OA\Response(response="200", description="Applications retrieved")
      * )
      */
-
     public function getApplications()
     {
         try {
@@ -1434,7 +1417,7 @@ class Candidate extends BaseController
 
             // Only fetch ACTIVE applications for candidates
             $applicationModel->where('candidateId', $user->id)
-                ->where('isActive', true);  // ← Filter out inactive (old withdrawn)
+                ->where('isActive', true);
 
             // Apply filters
             $status = $this->request->getGet('status');
