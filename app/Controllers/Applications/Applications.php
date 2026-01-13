@@ -7,6 +7,9 @@ use App\Models\Application;
 use App\Models\ApplicationStatusHistory;
 use App\Models\CandidateProfile;
 use App\Models\User;
+use App\Models\Job;
+use App\Models\Company;
+use App\Libraries\EmailHelper;
 use App\Traits\NormalizedResponseTrait;
 
 /**
@@ -22,12 +25,14 @@ class Applications extends BaseController
     protected $applicationModel;
     protected $historyModel;
     protected $candidateModel;
+    protected $emailHelper;
 
     public function __construct()
     {
         $this->applicationModel = new Application();
         $this->historyModel = new ApplicationStatusHistory();
         $this->candidateModel = new User();
+        $this->emailHelper = new EmailHelper();
     }
 
     /**
@@ -39,29 +44,29 @@ class Applications extends BaseController
             if ($jobId === null) {
                 $jobId = $this->request->getUri()->getSegment(4);
             }
-            
+
             if (!$jobId) {
                 return $this->fail('Job ID is required', 400);
             }
-            
+
             // Get pagination parameters
             $page = (int) ($this->request->getGet('page') ?? 1);
             $limit = (int) ($this->request->getGet('limit') ?? 20);
             $skip = ($page - 1) * $limit;
             $status = $this->request->getGet('status');
-            
+
             $db = \Config\Database::connect();
             $builder = $db->table('applications');
-            
+
             // Build base query
             $builder->where('applications.jobId', $jobId);
             if ($status) {
                 $builder->where('applications.status', $status);
             }
-            
+
             // Get total count for pagination
             $total = $builder->countAllResults(false);
-            
+
             // Get paginated applications with relationships
             $applications = $builder
                 ->select('applications.*, 
@@ -77,12 +82,12 @@ class Applications extends BaseController
                 ->limit($limit, $skip)
                 ->get()
                 ->getResultArray();
-            
+
             // Transform applications data
-            $formattedApplications = array_map(function($app) {
+            $formattedApplications = array_map(function ($app) {
                 return $this->formatApplicationData($app);
             }, $applications);
-            
+
             // Get additional relationships (domains, skills, education, experience)
             foreach ($formattedApplications as &$app) {
                 $app['candidate']['candidateProfile']['domains'] = $this->getCandidateDomains($app['candidate']['id']);
@@ -90,12 +95,12 @@ class Applications extends BaseController
                 $app['candidate']['candidateProfile']['educations'] = $this->getCandidateEducation($app['candidate']['id']);
                 $app['candidate']['candidateProfile']['experiences'] = $this->getCandidateExperience($app['candidate']['id']);
             }
-            
+
             // Calculate stats for this job
             $statsBuilder = $db->table('applications');
             $allApplications = $statsBuilder->where('jobId', $jobId)->get()->getResultArray();
             $stats = $this->calculateStats($allApplications);
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Applications retrieved successfully',
@@ -131,18 +136,17 @@ class Applications extends BaseController
             $page = (int) ($this->request->getGet('page') ?? 1);
             $limit = (int) ($this->request->getGet('limit') ?? 20);
             $skip = ($page - 1) * $limit;
-            
+
             // Get filters
             $status = $this->request->getGet('status');
             $jobId = $this->request->getGet('jobId');
             $candidateId = $this->request->getGet('candidateId');
             $query = $this->request->getGet('query');
             $minRating = $this->request->getGet('minRating');
-            
-            // ✅ FIX: Use Query Builder directly
+
             $db = \Config\Database::connect();
             $builder = $db->table('applications');
-            
+
             // Build query with joins
             $builder->select('applications.*, 
                     users.id as candidate_id, users.firstName, users.lastName, users.email, users.phone, users.avatar,
@@ -153,7 +157,7 @@ class Applications extends BaseController
                 ->join('candidate_profiles', 'candidate_profiles.userId = users.id', 'left')
                 ->join('jobs', 'jobs.id = applications.jobId', 'left')
                 ->join('companies', 'companies.id = jobs.companyId', 'left');
-            
+
             if ($status) {
                 $builder->where('applications.status', $status);
             }
@@ -174,22 +178,22 @@ class Applications extends BaseController
             if ($minRating) {
                 $builder->where('applications.rating >=', $minRating);
             }
-            
+
             // Get total count
             $total = $builder->countAllResults(false);
-            
+
             // Get paginated results
             $applications = $builder
                 ->orderBy('applications.appliedAt', 'DESC')
                 ->limit($limit, $skip)
                 ->get()
                 ->getResultArray();
-            
+
             // Transform applications data
-            $formattedApplications = array_map(function($app) {
+            $formattedApplications = array_map(function ($app) {
                 return $this->formatApplicationData($app);
             }, $applications);
-            
+
             // Get additional relationships
             foreach ($formattedApplications as &$app) {
                 $app['candidate']['candidateProfile']['domains'] = $this->getCandidateDomains($app['candidate']['id']);
@@ -197,7 +201,7 @@ class Applications extends BaseController
                 $app['candidate']['candidateProfile']['educations'] = $this->getCandidateEducation($app['candidate']['id']);
                 $app['candidate']['candidateProfile']['experiences'] = $this->getCandidateExperience($app['candidate']['id']);
             }
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Applications retrieved successfully',
@@ -231,14 +235,14 @@ class Applications extends BaseController
             if ($id === null) {
                 $id = $this->request->getUri()->getSegment(3);
             }
-            
+
             if (!$id) {
                 return $this->fail('Application ID is required', 400);
             }
-            
+
             $db = \Config\Database::connect();
             $builder = $db->table('applications');
-            
+
             // Get application with relationships
             $application = $builder
                 ->select('applications.*, 
@@ -260,13 +264,13 @@ class Applications extends BaseController
 
             // Format application data
             $formattedApplication = $this->formatApplicationData($application);
-            
+
             // Get complete candidate profile
             $formattedApplication['candidate']['candidateProfile']['domains'] = $this->getCandidateDomains($formattedApplication['candidate']['id']);
             $formattedApplication['candidate']['candidateProfile']['skills'] = $this->getCandidateSkills($formattedApplication['candidate']['id']);
             $formattedApplication['candidate']['candidateProfile']['educations'] = $this->getCandidateEducation($formattedApplication['candidate']['id']);
             $formattedApplication['candidate']['candidateProfile']['experiences'] = $this->getCandidateExperience($formattedApplication['candidate']['id']);
-            
+
             // Get status history
             $formattedApplication['statusHistory'] = $this->getStatusHistory($id);
 
@@ -287,6 +291,8 @@ class Applications extends BaseController
 
     /**
      * Update application status
+     * ✅ NEW: When status becomes REJECTED -> send rejection email (from headhunting@fortunekenya.com)
+     * ✅ KEEP application active for reporting (no isActive changes)
      */
     public function updateApplicationStatus($id = null)
     {
@@ -294,35 +300,35 @@ class Applications extends BaseController
             if ($id === null) {
                 $id = $this->request->getUri()->getSegment(3);
             }
-            
+
             if (!$id) {
                 return $this->fail('Application ID is required', 400);
             }
-            
+
             $data = $this->request->getJSON(true);
-            
+
             if (!isset($data['status'])) {
                 return $this->fail('Status is required', 400);
             }
-            
+
             $application = $this->applicationModel->find($id);
             if (!$application) {
                 return $this->failNotFound('Application not found');
             }
 
             $oldStatus = $application['status'];
-            
+
             // Prepare update data
             $updateData = ['status' => $data['status']];
-            
+
             if (isset($data['internalNotes'])) {
                 $updateData['internalNotes'] = $data['internalNotes'];
             }
-            
+
             if (isset($data['rating'])) {
                 $updateData['rating'] = (int) $data['rating'];
             }
-            
+
             // Update application
             $this->applicationModel->update($id, $updateData);
 
@@ -336,6 +342,44 @@ class Applications extends BaseController
                 'reason' => $data['reason'] ?? null,
                 'changedAt' => date('Y-m-d H:i:s')
             ]);
+
+            if ($data['status'] === 'REJECTED' && $oldStatus !== 'REJECTED') {
+                try {
+                    log_message('info', 'Attempting to send rejection email for app: ' . $id);
+
+                    $candidate = (new User())->find($application['candidateId']);
+                    $job = (new Job())->find($application['jobId']);
+
+                    log_message('info', 'Candidate found: ' . ($candidate ? $candidate['email'] : 'NOT FOUND'));
+                    log_message('info', 'Job found: ' . ($job ? $job['title'] : 'NOT FOUND'));
+
+                    $company = null;
+                    if ($job && !empty($job['companyId'])) {
+                        $company = (new Company())->find($job['companyId']);
+                    }
+
+                    if ($candidate && $job) {
+                        $emailResult = $this->emailHelper->sendApplicationRejectedEmail([
+                            'candidate' => [
+                                'firstName' => $candidate['firstName'] ?? '',
+                                'lastName' => $candidate['lastName'] ?? '',
+                                'email' => $candidate['email'] ?? ''
+                            ],
+                            'job' => [
+                                'title' => $job['title'] ?? '',
+                                'company' => [
+                                    'name' => $company['name'] ?? 'Fortune Kenya'
+                                ]
+                            ]
+                        ]);
+
+                        log_message('info', 'Email result: ' . json_encode($emailResult));
+                    }
+                } catch (\Exception $mailEx) {
+                    log_message('error', 'Rejection email exception: ' . $mailEx->getMessage());
+                    log_message('error', 'Stack trace: ' . $mailEx->getTraceAsString());
+                }
+            }
 
             return $this->respond([
                 'success' => true,
@@ -362,41 +406,79 @@ class Applications extends BaseController
     {
         try {
             $data = $this->request->getJSON(true);
-            
+
             if (!isset($data['applicationIds']) || !is_array($data['applicationIds'])) {
                 return $this->fail('Application IDs array is required', 400);
             }
-            
+
             if (!isset($data['status'])) {
                 return $this->fail('Status is required', 400);
             }
-            
+
             $updated = 0;
+
+            $userModel = new User();
+            $jobModel = new Job();
+            $companyModel = new Company();
+
             foreach ($data['applicationIds'] as $appId) {
                 $application = $this->applicationModel->find($appId);
-                if ($application) {
-                    $oldStatus = $application['status'];
-                    
-                    $updateData = ['status' => $data['status']];
-                    if (isset($data['internalNotes'])) {
-                        $updateData['internalNotes'] = $data['internalNotes'];
-                    }
-                    
-                    $this->applicationModel->update($appId, $updateData);
-                    
-                    // Log status change
-                    $this->historyModel->insert([
-                        'id' => uniqid('history_'),
-                        'applicationId' => $appId,
-                        'fromStatus' => $oldStatus,
-                        'toStatus' => $data['status'],
-                        'changedBy' => $this->request->user->id ?? null,
-                        'reason' => 'Bulk update',
-                        'changedAt' => date('Y-m-d H:i:s')
-                    ]);
-                    
-                    $updated++;
+                if (!$application) {
+                    continue;
                 }
+
+                $oldStatus = $application['status'];
+
+                $updateData = ['status' => $data['status']];
+                if (isset($data['internalNotes'])) {
+                    $updateData['internalNotes'] = $data['internalNotes'];
+                }
+
+                $this->applicationModel->update($appId, $updateData);
+
+                // Log status change
+                $this->historyModel->insert([
+                    'id' => uniqid('history_'),
+                    'applicationId' => $appId,
+                    'fromStatus' => $oldStatus,
+                    'toStatus' => $data['status'],
+                    'changedBy' => $this->request->user->id ?? null,
+                    'reason' => $data['reason'] ?? 'Bulk update',
+                    'changedAt' => date('Y-m-d H:i:s')
+                ]);
+
+                // ✅ Send rejection email (only on transition)
+                if ($data['status'] === 'REJECTED' && $oldStatus !== 'REJECTED') {
+                    try {
+                        $candidate = $userModel->find($application['candidateId']);
+                        $job = $jobModel->find($application['jobId']);
+
+                        $company = null;
+                        if ($job && !empty($job['companyId'])) {
+                            $company = $companyModel->find($job['companyId']);
+                        }
+
+                        if ($candidate && $job) {
+                            $this->emailHelper->sendApplicationRejectedEmail([
+                                'candidate' => [
+                                    'firstName' => $candidate['firstName'] ?? '',
+                                    'lastName' => $candidate['lastName'] ?? '',
+                                    'email' => $candidate['email'] ?? ''
+                                ],
+                                'job' => [
+                                    'title' => $job['title'] ?? '',
+                                    'company' => [
+                                        'name' => $company['name'] ?? 'Fortune Kenya'
+                                    ]
+                                ]
+                            ]);
+                        }
+                    } catch (\Exception $mailEx) {
+                        log_message('error', 'Bulk rejection email failed: ' . $mailEx->getMessage());
+                    }
+                }
+
+                $updated++;
             }
 
             return $this->respond([
@@ -423,15 +505,15 @@ class Applications extends BaseController
     {
         try {
             $userId = $this->request->user->id ?? null;
-            
+
             if (!$userId) {
                 return $this->fail('Unauthorized', 401);
             }
-            
+
             // Get user's company
             $companyModel = new \App\Models\Company();
             $company = $companyModel->where('ownerId', $userId)->first();
-            
+
             if (!$company) {
                 return $this->respond([
                     'success' => true,
@@ -450,10 +532,10 @@ class Applications extends BaseController
                     ]
                 ]);
             }
-            
+
             $db = \Config\Database::connect();
             $builder = $db->table('applications');
-            
+
             // Get all applications for company jobs
             $applications = $builder
                 ->select('applications.*')
@@ -461,9 +543,9 @@ class Applications extends BaseController
                 ->where('jobs.companyId', $company['id'])
                 ->get()
                 ->getResultArray();
-            
+
             $stats = $this->calculateStats($applications);
-            
+
             // Get recent applications
             $recentBuilder = $db->table('applications');
             $recentApplications = $recentBuilder
@@ -481,8 +563,8 @@ class Applications extends BaseController
                 ->limit(10)
                 ->get()
                 ->getResultArray();
-            
-            $formattedRecent = array_map(function($app) {
+
+            $formattedRecent = array_map(function ($app) {
                 return $this->formatApplicationData($app);
             }, $recentApplications);
 
@@ -511,11 +593,10 @@ class Applications extends BaseController
     {
         try {
             $jobId = $this->request->getGet('jobId');
-            
-            // ✅ FIX: Use Query Builder
+
             $db = \Config\Database::connect();
             $builder = $db->table('applications');
-            
+
             $builder->select('applications.*, 
                     users.firstName, users.lastName, users.email, users.phone,
                     candidate_profiles.title, candidate_profiles.location, candidate_profiles.experienceYears,
@@ -525,16 +606,16 @@ class Applications extends BaseController
                 ->join('candidate_profiles', 'candidate_profiles.userId = users.id', 'left')
                 ->join('jobs', 'jobs.id = applications.jobId', 'left')
                 ->join('companies', 'companies.id = jobs.companyId', 'left');
-            
+
             if ($jobId) {
                 $builder->where('applications.jobId', $jobId);
             }
-            
+
             $applications = $builder->get()->getResultArray();
-            
+
             // Generate CSV
             $csv = "ID,Candidate Name,Email,Phone,Job Title,Company,Status,Applied At,Expected Salary,Location,Experience\n";
-            
+
             foreach ($applications as $app) {
                 $csv .= sprintf(
                     '"%s","%s","%s","%s","%s","%s","%s","%s","%s","%s","%s"' . "\n",
@@ -551,7 +632,7 @@ class Applications extends BaseController
                     $app['experienceYears'] ?? ''
                 );
             }
-            
+
             return $this->response
                 ->setHeader('Content-Type', 'text/csv')
                 ->setHeader('Content-Disposition', 'attachment; filename="applications_' . date('Y-m-d') . '.csv"')
@@ -575,27 +656,27 @@ class Applications extends BaseController
             if ($id === null) {
                 $id = $this->request->getUri()->getSegment(3);
             }
-            
+
             if (!$id) {
                 return $this->fail('Application ID is required', 400);
             }
-            
+
             $data = $this->request->getJSON(true);
-            
+
             if (!isset($data['note'])) {
                 return $this->fail('Note is required', 400);
             }
-            
+
             $application = $this->applicationModel->find($id);
             if (!$application) {
                 return $this->failNotFound('Application not found');
             }
-            
+
             $userName = ($this->request->user->firstName ?? 'User') . ' ' . ($this->request->user->lastName ?? '');
             $notes = $application['internalNotes'] ?? '';
             $newNote = "\n[" . date('Y-m-d H:i:s') . " - {$userName}]: " . $data['note'];
             $notes .= $newNote;
-            
+
             $this->applicationModel->update($id, ['internalNotes' => $notes]);
 
             return $this->respond([
@@ -621,19 +702,19 @@ class Applications extends BaseController
             if ($candidateId === null) {
                 $candidateId = $this->request->getUri()->getSegment(4);
             }
-            
+
             if (!$candidateId) {
                 return $this->fail('Candidate ID is required', 400);
             }
-            
+
             $candidate = $this->candidateModel->find($candidateId);
             if (!$candidate) {
                 return $this->failNotFound('Candidate not found');
             }
-            
+
             $profileModel = new CandidateProfile();
             $profile = $profileModel->where('userId', $candidateId)->first();
-            
+
             $candidateData = [
                 'id' => $candidate['id'],
                 'firstName' => $candidate['firstName'],
@@ -653,7 +734,7 @@ class Applications extends BaseController
                     'experiences' => $this->getCandidateExperience($candidateId)
                 ]
             ];
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Candidate profile retrieved successfully',
@@ -670,7 +751,7 @@ class Applications extends BaseController
     }
 
     // ==================== HELPER METHODS ====================
-    
+
     private function formatApplicationData($app)
     {
         return [
@@ -717,31 +798,30 @@ class Applications extends BaseController
             ]
         ];
     }
-    
+
     private function getCandidateDomains($candidateId)
     {
         try {
             $db = \Config\Database::connect();
-            
-            // Get candidate profile ID
+
             $profile = $db->table('candidate_profiles')
                 ->select('id')
                 ->where('userId', $candidateId)
                 ->get()
                 ->getRowArray();
-            
+
             if (!$profile) {
                 return [];
             }
-            
+
             $domains = $db->table('candidate_domains')
                 ->select('candidate_domains.*, domains.id as domain_id, domains.name as domain_name')
                 ->join('domains', 'domains.id = candidate_domains.domainId')
                 ->where('candidate_domains.candidateId', $profile['id'])
                 ->get()
                 ->getResultArray();
-            
-            return array_map(function($d) {
+
+            return array_map(function ($d) {
                 return [
                     'domain' => [
                         'id' => $d['domain_id'],
@@ -755,31 +835,30 @@ class Applications extends BaseController
             return [];
         }
     }
-    
+
     private function getCandidateSkills($candidateId)
     {
         try {
             $db = \Config\Database::connect();
-            
-            // Get candidate profile ID
+
             $profile = $db->table('candidate_profiles')
                 ->select('id')
                 ->where('userId', $candidateId)
                 ->get()
                 ->getRowArray();
-            
+
             if (!$profile) {
                 return [];
             }
-            
+
             $skills = $db->table('candidate_skills')
                 ->select('candidate_skills.level, candidate_skills.yearsOfExp, skills.id as skill_id, skills.name as skill_name')
                 ->join('skills', 'skills.id = candidate_skills.skillId')
                 ->where('candidate_skills.candidateId', $profile['id'])
                 ->get()
                 ->getResultArray();
-            
-            return array_map(function($s) {
+
+            return array_map(function ($s) {
                 return [
                     'skill' => [
                         'id' => $s['skill_id'],
@@ -794,23 +873,22 @@ class Applications extends BaseController
             return [];
         }
     }
-    
+
     private function getCandidateEducation($candidateId)
     {
         try {
             $db = \Config\Database::connect();
-            
-            // Get candidate profile ID
+
             $profile = $db->table('candidate_profiles')
                 ->select('id')
                 ->where('userId', $candidateId)
                 ->get()
                 ->getRowArray();
-            
+
             if (!$profile) {
                 return [];
             }
-            
+
             return $db->table('educations')
                 ->where('candidateId', $profile['id'])
                 ->orderBy('startDate', 'DESC')
@@ -821,23 +899,22 @@ class Applications extends BaseController
             return [];
         }
     }
-    
+
     private function getCandidateExperience($candidateId)
     {
         try {
             $db = \Config\Database::connect();
-            
-            // Get candidate profile ID
+
             $profile = $db->table('candidate_profiles')
                 ->select('id')
                 ->where('userId', $candidateId)
                 ->get()
                 ->getRowArray();
-            
+
             if (!$profile) {
                 return [];
             }
-            
+
             return $db->table('experiences')
                 ->where('candidateId', $profile['id'])
                 ->orderBy('startDate', 'DESC')
@@ -848,7 +925,7 @@ class Applications extends BaseController
             return [];
         }
     }
-    
+
     private function getStatusHistory($applicationId)
     {
         return $this->historyModel
@@ -856,7 +933,7 @@ class Applications extends BaseController
             ->orderBy('changedAt', 'DESC')
             ->findAll();
     }
-    
+
     private function calculateStats($applications)
     {
         $stats = [
@@ -870,14 +947,116 @@ class Applications extends BaseController
             'rejected' => 0,
             'withdrawn' => 0
         ];
-        
+
         foreach ($applications as $app) {
             $status = strtolower($app['status'] ?? '');
             if (isset($stats[$status])) {
                 $stats[$status]++;
             }
         }
-        
+
         return $stats;
+    }
+
+    /**
+     * Get applications for current employer's jobs
+     * Used for interview scheduling
+     */
+    public function getMyApplications()
+    {
+        try {
+            $user = $this->request->user ?? null;
+            if (!$user) {
+                return $this->fail('Unauthorized', 401);
+            }
+
+            $status = $this->request->getGet('status');
+            $page = (int) ($this->request->getGet('page') ?? 1);
+            $limit = (int) ($this->request->getGet('limit') ?? 100);
+            $skip = ($page - 1) * $limit;
+
+            $db = \Config\Database::connect();
+
+            $employerProfile = $db->table('employer_profiles')
+                ->where('userId', $user->id)
+                ->get()
+                ->getRowArray();
+
+            if (!$employerProfile) {
+                return $this->respond([
+                    'success' => true,
+                    'data' => [
+                        'applications' => [],
+                        'pagination' => [
+                            'total' => 0,
+                            'page' => 1,
+                            'limit' => $limit,
+                            'totalPages' => 0
+                        ]
+                    ]
+                ]);
+            }
+
+            $builder = $db->table('applications');
+            $builder->select('applications.id, applications.jobId, applications.candidateId,
+                users.firstName as candidate_firstName, users.lastName as candidate_lastName,
+                users.email as candidate_email, users.phone as candidate_phone,
+                jobs.id as job_id, jobs.title as job_title')
+                ->join('users', 'users.id = applications.candidateId', 'left')
+                ->join('jobs', 'jobs.id = applications.jobId', 'left')
+                ->where('jobs.companyId', $employerProfile['companyId']);
+
+            if ($status) {
+                $builder->where('applications.status', $status);
+            }
+
+            $total = $builder->countAllResults(false);
+
+            $applications = $builder
+                ->orderBy('applications.appliedAt', 'DESC')
+                ->limit($limit, $skip)
+                ->get()
+                ->getResultArray();
+
+            $formattedApplications = array_map(function ($app) {
+                return [
+                    'id' => $app['id'],
+                    'jobId' => $app['jobId'],
+                    'candidateId' => $app['candidateId'],
+                    'candidate' => [
+                        'id' => $app['candidateId'],
+                        'firstName' => $app['candidate_firstName'],
+                        'lastName' => $app['candidate_lastName'],
+                        'email' => $app['candidate_email'],
+                        'phone' => $app['candidate_phone']
+                    ],
+                    'job' => [
+                        'id' => $app['job_id'],
+                        'title' => $app['job_title']
+                    ]
+                ];
+            }, $applications);
+
+            return $this->respond([
+                'success' => true,
+                'message' => 'Applications retrieved successfully',
+                'data' => [
+                    'applications' => $formattedApplications,
+                    'pagination' => [
+                        'total' => $total,
+                        'page' => $page,
+                        'limit' => $limit,
+                        'totalPages' => ceil($total / $limit)
+                    ]
+                ]
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', 'Failed to get my applications: ' . $e->getMessage());
+            return $this->respond([
+                'success' => false,
+                'message' => 'Failed to retrieve applications',
+                'error' => $e->getMessage()
+            ], 500);
+        }
     }
 }
