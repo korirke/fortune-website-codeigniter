@@ -1475,14 +1475,15 @@ class Candidate extends BaseController
             }
 
             // Calculate stats from ACTIVE applications only
-            $activeStatuses = ['PENDING', 'REVIEWED', 'SHORTLISTED', 'INTERVIEWED', 'OFFERED'];
+            $activeStatuses = ['PENDING', 'REVIEWED', 'SHORTLISTED', 'INTERVIEW', 'INTERVIEWED', 'OFFERED'];
 
             $stats = [
                 'total' => count(array_filter($applications, fn($a) => in_array($a['status'] ?? '', $activeStatuses))),
                 'pending' => count(array_filter($applications, fn($a) => ($a['status'] ?? '') === 'PENDING')),
                 'reviewed' => count(array_filter($applications, fn($a) => ($a['status'] ?? '') === 'REVIEWED')),
                 'shortlisted' => count(array_filter($applications, fn($a) => ($a['status'] ?? '') === 'SHORTLISTED')),
-                'interview' => count(array_filter($applications, fn($a) => ($a['status'] ?? '') === 'INTERVIEWED')),
+                'interview' => count(array_filter($applications, fn($a) => ($a['status'] ?? '') === 'INTERVIEW')),
+                'interviewed' => count(array_filter($applications, fn($a) => ($a['status'] ?? '') === 'INTERVIEWED')),
                 'offered' => count(array_filter($applications, fn($a) => ($a['status'] ?? '') === 'OFFERED')),
                 'accepted' => count(array_filter($applications, fn($a) => ($a['status'] ?? '') === 'ACCEPTED')),
                 'rejected' => count(array_filter($applications, fn($a) => ($a['status'] ?? '') === 'REJECTED')),
