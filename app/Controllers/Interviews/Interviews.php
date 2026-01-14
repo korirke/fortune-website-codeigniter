@@ -62,6 +62,8 @@ class Interviews extends BaseController
         try {
             $data = $this->request->getJSON(true);
 
+            $data = $this->sanitizeInterviewData($data);
+
             $rules = [
                 'applicationId' => 'required|string',
                 'jobId'         => 'required|string',
@@ -142,6 +144,7 @@ class Interviews extends BaseController
             return $this->respondCreated(DataTypeHelper::normalizeResponse($response));
         } catch (\Exception $e) {
             log_message('error', 'Interview creation failed: ' . $e->getMessage());
+            log_message('error', 'Stack trace: ' . $e->getTraceAsString());
             return $this->fail('Failed to schedule interview: ' . $e->getMessage(), 500);
         }
     }
@@ -281,6 +284,9 @@ class Interviews extends BaseController
             }
 
             $data = $this->request->getJSON(true);
+            
+            $data = $this->sanitizeInterviewData($data);
+            
             $oldStatus = $interview['status'];
 
             if (isset($data['scheduledAt']) && $data['scheduledAt'] !== null) {
@@ -557,6 +563,48 @@ class Interviews extends BaseController
     }
 
     // ============================================================
+    // DATA SANITIZATION
+    // ============================================================
+
+    /**
+     * Sanitize all text fields to prevent encoding issues
+     */
+    private function sanitizeInterviewData(array $data): array
+    {
+        $textFields = [
+            'notes', 'location', 'interviewerName', 'meetingLink', 
+            'meetingPassword', 'meetingId', 'type', 'status'
+        ];
+
+        foreach ($textFields as $field) {
+            if (isset($data[$field]) && $data[$field] !== null) {
+                $data[$field] = $this->cleanUtf8((string)$data[$field]);
+            }
+        }
+
+        return $data;
+    }
+
+    /**
+     * Ensure clean UTF-8 string
+     */
+    private function cleanUtf8(string $text): string
+    {
+        // Remove null bytes
+        $text = str_replace("\0", '', $text);
+        
+        // Convert to UTF-8 if needed
+        if (!mb_check_encoding($text, 'UTF-8')) {
+            $text = mb_convert_encoding($text, 'UTF-8', 'auto');
+        }
+        
+        // Remove invalid UTF-8 sequences
+        $text = mb_convert_encoding($text, 'UTF-8', 'UTF-8');
+        
+        return trim($text);
+    }
+
+    // ============================================================
     // EMAIL NOTIFICATIONS
     // ============================================================
 
@@ -619,7 +667,7 @@ class Interviews extends BaseController
     }
 
     // ============================================================
-    // SIMPLE PROFESSIONAL EMAILS (NO BLOCKS) BUT SAME TEXT
+    // EMAIL BUILDERS
     // ============================================================
 
     private function buildReminderEmail($candidateName, $jobTitle, $scheduledDate, $interview)
@@ -629,7 +677,7 @@ class Interviews extends BaseController
 
         $type     = $interview['type'] ?? 'VIDEO';
         $isOnline = in_array($type, ['VIDEO', 'PHONE'], true);
-        $category = $isOnline ? 'Online Interview' : ' Physical Interview';
+        $category = $isOnline ? 'Online Interview' : 'Physical Interview';
 
         $meetingLink = $interview['meetingLink'] ?? null;
         $location    = $interview['location'] ?? null;
