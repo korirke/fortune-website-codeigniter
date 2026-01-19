@@ -192,8 +192,8 @@ $routes->group('api/admin/upload', ['namespace' => 'App\Controllers\Upload'], fu
     $routes->post('multiple', 'Upload::uploadFiles');
     $routes->get('', 'Upload::listFiles');
     $routes->get('stats', 'Upload::getStats');
-    $routes->get('(:segment)', 'Upload::getFile');
-    $routes->delete('(:segment)', 'Upload::deleteFile');
+    $routes->get('(:segment)', 'Upload::getFile/$1');
+    $routes->delete('(:segment)', 'Upload::deleteFile/$1');
 });
 
 // Admin Routes 
@@ -213,7 +213,8 @@ $routes->group('api/admin', ['namespace' => 'App\Controllers\Admin', 'filter' =>
     $routes->put('services', 'Admin::updateServices');
     $routes->delete('services/(:segment)', 'Admin::deleteService');
     $routes->put('testimonials', 'Admin::updateTestimonials');
-    $routes->delete('testimonials/(:segment)', 'Admin::deleteTestimonial');
+    $routes->delete('testimonials/(:segment)', 'Admin::deleteTestimonial/$1', ['filter' => 'auth']);
+    // $routes->delete('testimonials/(:segment)', 'Admin::deleteTestimonial');
     $routes->put('stats', 'Admin::updateStats');
     $routes->delete('stats/(:segment)', 'Admin::deleteStat');
     $routes->put('footer', 'Admin::updateFooter');
