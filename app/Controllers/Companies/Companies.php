@@ -54,38 +54,38 @@ class Companies extends BaseController
 
         $data = $this->request->getJSON(true);
         $companyModel = new Company();
-        
+
         try {
             // Check if employer already has a company
             $employerModel = new EmployerProfile();
             $existingProfile = $employerModel->where('userId', $user->id)->first();
-            
+
             if ($existingProfile) {
                 return $this->fail('You already have a company profile', 400);
             }
-            
+
             // Get user email
             $userModel = new \App\Models\User();
             $userData = $userModel->select('email')->find($user->id);
-            
+
             if (!$userData) {
                 return $this->failNotFound('User not found');
             }
-            
-            // Generate unique slug (matching Node.js)
+
+            // Generate unique slug 
             $baseSlug = strtolower(preg_replace('/[^a-z0-9]+/', '-', $data['name']));
             $baseSlug = preg_replace('/^-|-$/', '', $baseSlug);
             $slug = $baseSlug . '-' . time();
-            
+
             // Convert socialLinks to JSON if it's an array/object
             if (isset($data['socialLinks']) && (is_array($data['socialLinks']) || is_object($data['socialLinks']))) {
                 $data['socialLinks'] = json_encode($data['socialLinks']);
             }
-            
-            // Use transaction to ensure both operations succeed or fail together (matching Node.js)
+
+            // Use transaction to ensure both operations succeed or fail together 
             $db = \Config\Database::connect();
             $db->transStart();
-            
+
             try {
                 // Create company
                 $companyData = [
@@ -107,7 +107,7 @@ class Companies extends BaseController
                     'verifiedAt' => date('Y-m-d H:i:s')
                 ];
                 $companyModel->insert($companyData);
-                
+
                 // Create employer profile
                 $employerData = [
                     'id' => uniqid('employer_'),
@@ -119,17 +119,17 @@ class Companies extends BaseController
                     'canViewCVs' => true
                 ];
                 $employerModel->insert($employerData);
-                
+
                 $db->transComplete();
-                
+
                 if ($db->transStatus() === false) {
                     throw new \Exception('Transaction failed');
                 }
-                
-                // Get created company and employer profile (matching Node.js)
+
+                // Get created company and employer profile 
                 $createdCompany = $companyModel->find($companyData['id']);
                 $createdEmployer = $employerModel->find($employerData['id']);
-                
+
                 return $this->respondCreated([
                     'success' => true,
                     'message' => 'Company setup completed successfully',
@@ -170,7 +170,7 @@ class Companies extends BaseController
         try {
             $employerModel = new EmployerProfile();
             $employer = $employerModel->where('userId', $user->id)->first();
-            
+
             if (!$employer) {
                 // Node.js returns success: true with data: null if no profile found
                 return $this->respond([
@@ -182,17 +182,17 @@ class Companies extends BaseController
 
             $companyModel = new Company();
             $company = $companyModel->find($employer['companyId']);
-            
+
             if (!$company) {
                 return $this->failNotFound('Company not found');
             }
-            
-            // Get job counts and employer profile counts (matching Node.js)
+
+            // Get job counts and employer profile counts 
             $jobModel = new \App\Models\Job();
             $jobCount = $jobModel->where('companyId', $company['id'])->countAllResults(false);
-            
+
             $employerCount = $employerModel->where('companyId', $company['id'])->countAllResults(false);
-            
+
             $company['_count'] = [
                 'jobs' => $jobCount,
                 'employerProfiles' => $employerCount
@@ -246,14 +246,14 @@ class Companies extends BaseController
 
         try {
             $data = $this->request->getJSON(true);
-            
+
             $employerModel = new EmployerProfile();
             $employer = $employerModel->where('userId', $user->id)->first();
-            
+
             if (!$employer) {
                 return $this->failNotFound('Employer profile not found');
             }
-            
+
             // Convert socialLinks to JSON if it's an array/object
             $updateData = [];
             foreach ($data as $key => $value) {
@@ -265,15 +265,15 @@ class Companies extends BaseController
                     } else {
                         $updateData[$key] = $value;
                     }
-                } elseif ($value !== undefined) {
+                } elseif ($value !== null) {  // Changed from 'undefined' to 'null'
                     $updateData[$key] = $value;
                 }
             }
-            
+
             $companyModel = new Company();
             $companyModel->update($employer['companyId'], $updateData);
-            
-            // Get updated company (matching Node.js)
+
+            // Get updated company 
             $updatedCompany = $companyModel->find($employer['companyId']);
 
             return $this->respond([
@@ -309,29 +309,29 @@ class Companies extends BaseController
 
             $employerModel = new EmployerProfile();
             $employer = $employerModel->where('userId', $user->id)->first();
-            
+
             if (!$employer) {
                 return $this->failNotFound('Employer profile not found');
             }
-            
+
             $jobModel = new \App\Models\Job();
             $applicationModel = new \App\Models\Application();
-            
+
             // Get stats matching Node.js structure
             $activeJobs = $jobModel->where('companyId', $employer['companyId'])
                 ->where('status', 'ACTIVE')
                 ->countAllResults(false);
-            
+
             $totalJobs = $jobModel->where('companyId', $employer['companyId'])
                 ->countAllResults(false);
-            
+
             // Get total applications (matching Node.js - using subquery to avoid join issues)
             $db = \Config\Database::connect();
             $totalApplications = $db->table('applications')
                 ->join('jobs', 'jobs.id = applications.jobId', 'inner')
                 ->where('jobs.companyId', $employer['companyId'])
                 ->countAllResults(false);
-            
+
             // Get recent applications (last 10) - matching Node.js structure
             $recentApplicationsRaw = $db->table('applications')
                 ->select('applications.id, applications.status, applications.appliedAt, 
@@ -344,7 +344,7 @@ class Companies extends BaseController
                 ->limit(10)
                 ->get()
                 ->getResultArray();
-            
+
             // Format recent applications to match Node.js structure
             $recentFormatted = [];
             foreach ($recentApplicationsRaw as $app) {
@@ -400,12 +400,12 @@ class Companies extends BaseController
     {
         try {
             $companyModel = new Company();
-            
+
             // Get filters
             $status = $this->request->getGet('status');
             $industry = $this->request->getGet('industry');
             $search = $this->request->getGet('search');
-            
+
             if ($status) {
                 $companyModel->where('status', $status);
             }
@@ -418,14 +418,14 @@ class Companies extends BaseController
                     ->orLike('email', $search)
                     ->groupEnd();
             }
-            
+
             $companies = $companyModel->orderBy('createdAt', 'DESC')->findAll();
-            
-            // Format companies to include employer profiles and counts (matching Node.js)
+
+            // Format companies to include employer profiles and counts 
             $employerModel = new EmployerProfile();
             $jobModel = new \App\Models\Job();
             $userModel = new \App\Models\User();
-            
+
             foreach ($companies as &$company) {
                 // Get employer profiles with user data
                 $employers = $employerModel->where('companyId', $company['id'])->findAll();
@@ -436,7 +436,7 @@ class Companies extends BaseController
                     $employersWithUsers[] = $employer;
                 }
                 $company['employerProfiles'] = $employersWithUsers;
-                
+
                 // Get counts
                 $jobCount = $jobModel->where('companyId', $company['id'])->countAllResults(false);
                 $employerCount = count($employers);
@@ -503,20 +503,20 @@ class Companies extends BaseController
         if ($id === null) {
             $id = $this->request->getUri()->getSegment(3);
         }
-        
+
         if (!$id) {
             return $this->fail('Company ID is required', 400);
         }
-        
+
         $data = $this->request->getJSON(true);
         $companyModel = new Company();
-        
+
         $updateData = [
             'status' => $data['status'],
             'verified' => $data['status'] === 'VERIFIED',
             'verifiedAt' => $data['status'] === 'VERIFIED' ? date('Y-m-d H:i:s') : null
         ];
-        
+
         $companyModel->update($id, $updateData);
 
         return $this->respond([
@@ -546,14 +546,14 @@ class Companies extends BaseController
         if ($id === null) {
             $id = $this->request->getUri()->getSegment(3);
         }
-        
+
         if (!$id) {
             return $this->fail('Company ID is required', 400);
         }
-        
+
         $data = $this->request->getJSON(true);
         $companyModel = new Company();
-        
+
         $companyModel->update($id, [
             'status' => 'SUSPENDED'
         ]);
@@ -597,18 +597,18 @@ class Companies extends BaseController
         if ($id === null) {
             $id = $this->request->getUri()->getSegment(3);
         }
-        
+
         if (!$id) {
             return $this->fail('Company ID is required', 400);
         }
-        
+
         $data = $this->request->getJSON(true);
-        
+
         // Convert socialLinks to JSON if it's an array/object
         if (isset($data['socialLinks']) && (is_array($data['socialLinks']) || is_object($data['socialLinks']))) {
             $data['socialLinks'] = json_encode($data['socialLinks']);
         }
-        
+
         $companyModel = new Company();
         $companyModel->update($id, $data);
 
@@ -633,11 +633,11 @@ class Companies extends BaseController
         if ($id === null) {
             $id = $this->request->getUri()->getSegment(3);
         }
-        
+
         if (!$id) {
             return $this->fail('Company ID is required', 400);
         }
-        
+
         $companyModel = new Company();
         $company = $companyModel->find($id);
 
