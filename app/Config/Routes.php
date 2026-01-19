@@ -158,10 +158,11 @@ $routes->group('api/companies', ['namespace' => 'App\Controllers\Companies'], fu
     $routes->get('me/stats', 'Companies::getMyCompanyStats', ['filter' => 'auth']);
     $routes->get('admin/all', 'Companies::getAllCompaniesAdmin', ['filter' => 'auth']);
     $routes->get('admin/pending', 'Companies::getPendingCompanies', ['filter' => 'auth']);
-    $routes->patch('admin/(:segment)/verify', 'Companies::verifyCompany', ['filter' => 'auth']);
-    $routes->patch('admin/(:segment)/suspend', 'Companies::suspendCompany', ['filter' => 'auth']);
-    $routes->put('admin/(:segment)', 'Companies::forceUpdateCompany', ['filter' => 'auth']);
-    $routes->get('admin/(:segment)', 'Companies::getCompanyById', ['filter' => 'auth']);
+    $routes->get('admin/(:segment)', 'Companies::getCompanyById/$1', ['filter' => 'auth']);
+    $routes->put('admin/(:segment)', 'Companies::forceUpdateCompany/$1', ['filter' => 'auth']);
+    $routes->patch('admin/(:segment)', 'Companies::forceUpdateCompany/$1', ['filter' => 'auth']);
+    $routes->patch('admin/(:segment)/verify', 'Companies::verifyCompany/$1', ['filter' => 'auth']);
+    $routes->patch('admin/(:segment)/suspend', 'Companies::suspendCompany/$1', ['filter' => 'auth']);
 });
 
 // Contact Routes 
