@@ -16,7 +16,6 @@ $routes->setDefaultMethod('index');
 $routes->get('api-docs', 'Swagger\Swagger::index');
 $routes->get('api-docs.json', 'Swagger\Swagger::json');
 $routes->get('api-docs/debug', 'Swagger\Swagger::debug');
-// Backward compatibility - redirect swagger.json to api-docs.json
 $routes->get('swagger.json', 'Swagger\Swagger::json');
 
 // Note: Static files at /uploads/* are served directly from public/uploads directory
@@ -32,33 +31,40 @@ $routes->group('api', [], function ($routes) {
     $routes->get('health', 'App\Controllers\App::health');
 });
 
-// Jobs Routes - MUST come BEFORE public routes to avoid route conflicts
-// Public routes first, then authenticated routes
-// Specific routes MUST come before generic (:any) routes
+// ============================================
+// JOBS ROUTES
+// ============================================
 $routes->group('api/jobs', ['namespace' => 'App\Controllers\Jobs'], function ($routes) {
-    // PUBLIC ROUTES
+
+    // ===== PUBLIC ROUTES (no auth) =====
     $routes->get('search', 'Jobs::searchJobs');
     $routes->get('categories', 'Jobs::getCategories');
     $routes->get('newest', 'Jobs::getNewestJobs');
-    // Note: getJobById with :id is public in Node.js but must come after specific routes
-    // We'll add it at the end of authenticated routes to avoid conflicts
 
-    // AUTHENTICATED ROUTES
-    $routes->post('', 'Jobs::createJob', ['filter' => 'auth']);
-    $routes->put('(:any)', 'Jobs::updateJob', ['filter' => 'auth']);
-    $routes->delete('(:any)', 'Jobs::deleteJob', ['filter' => 'auth']);
-
-    // Specific authenticated routes (must come before generic :id route)
+    // ===== AUTH ROUTES (specific,be above generic) =====
     $routes->get('employer/my-jobs', 'Jobs::getMyJobs', ['filter' => 'auth']);
+
+    //  Management fetch for edit screen (DRAFT/PENDING/REJECTED)
+    $routes->get('manage/(:segment)', 'Jobs::getManageJobById/$1', ['filter' => 'auth']);
+
+    // Admin routes
     $routes->get('admin/moderation-queue', 'Jobs::getModerationQueue', ['filter' => 'auth']);
-    $routes->patch('(:any)/moderate', 'Jobs::moderateJob', ['filter' => 'auth']);
-    $routes->patch('(:any)/status/(:any)', 'Jobs::changeJobStatus', ['filter' => 'auth']);
     $routes->get('admin/all', 'Jobs::getAllJobsAdmin', ['filter' => 'auth']);
     $routes->patch('admin/bulk-status', 'Jobs::bulkUpdateStatus', ['filter' => 'auth']);
 
-    // Public route for getting job by ID (must be last to not catch other routes)
-    // In Node.js this comes before authenticated routes, but in CodeIgniter it must be last
-    $routes->get('(:any)', 'Jobs::getJobById');
+    // Create
+    $routes->post('', 'Jobs::createJob', ['filter' => 'auth']);
+
+    // Public - get by ID OR slug
+    $routes->get('(:segment)', 'Jobs::getJobById/$1');
+
+    // Authenticated update/delete
+    $routes->put('(:segment)', 'Jobs::updateJob/$1', ['filter' => 'auth']);
+    $routes->delete('(:segment)', 'Jobs::deleteJob/$1', ['filter' => 'auth']);
+
+    // Nested
+    $routes->patch('(:segment)/moderate', 'Jobs::moderateJob/$1', ['filter' => 'auth']);
+    $routes->patch('(:segment)/status/(:segment)', 'Jobs::changeJobStatus/$1/$2', ['filter' => 'auth']);
 });
 
 // Public Routes 
@@ -129,7 +135,6 @@ $routes->group('api/candidate', ['namespace' => 'App\Controllers\Candidate', 'fi
     $routes->get('applications/(:segment)', 'Candidate::getApplication/$1');
     $routes->post('applications/(:segment)/withdraw', 'Candidate::withdrawApplication/$1');
 });
-
 
 // Applications Routes
 $routes->group('api/applications', ['namespace' => 'App\Controllers\Applications', 'filter' => 'auth'], function ($routes) {
@@ -303,7 +308,6 @@ $routes->group('api/about', ['namespace' => 'App\Controllers\About'], function (
     $routes->get('sections/(:segment)/versions', 'About::getSectionVersions', ['filter' => 'auth']);
     $routes->post('sections/(:segment)/restore/(:num)', 'About::restoreVersion', ['filter' => 'auth']);
 });
-
 
 // Interview Routes 
 $routes->group('api/interviews', ['namespace' => 'App\Controllers\Interviews', 'filter' => 'auth'], function ($routes) {
