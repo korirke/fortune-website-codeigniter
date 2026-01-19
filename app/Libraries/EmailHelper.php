@@ -333,7 +333,7 @@ If the button doesn't work, click: <a href='{$safeUrl}'>{$safeText}</a>
 <p><strong>Team Size:</strong> " . htmlspecialchars((string)($quoteRequest['teamSize'] ?? 'N/A')) . "</p>
 <p><strong>Services:</strong> " . htmlspecialchars($this->cleanUtf8($services)) . "</p>
 <p><strong>Message:</strong><br>" . nl2br(htmlspecialchars($this->cleanUtf8((string)($quoteRequest['message'] ?? 'N/A')))) . "</p>
-<p><a href='" . htmlspecialchars($this->getFrontendUrl() . "/admin/pricing-request") . "'>View in Admin Panel</a></p>";
+<p><a href='" . htmlspecialchars($this->getFrontendUrl() . "/pricing-request") . "'>View in Admin Panel</a></p>";
 
         $html = $this->wrapEmailHtml('New Quote Request', $inner);
 
