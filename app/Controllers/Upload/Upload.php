@@ -5,314 +5,248 @@ namespace App\Controllers\Upload;
 use App\Controllers\BaseController;
 use App\Models\FileUpload;
 use App\Traits\NormalizedResponseTrait;
+use CodeIgniter\HTTP\Files\UploadedFile;
+use CodeIgniter\HTTP\ResponseInterface;
 
-/**
- * @OA\Tag(
- *     name="Upload",
- *     description="File upload endpoints"
- * )
- */
 class Upload extends BaseController
 {
     use NormalizedResponseTrait;
 
-    /**
-     * @OA\Post(
-     *     path="/api/admin/upload",
-     *     tags={"Upload"},
-     *     summary="Upload a single file",
-     *     @OA\RequestBody(
-     *         required=true,
-     *         @OA\MediaType(
-     *             mediaType="multipart/form-data",
-     *             @OA\Schema(
-     *                 type="object",
-     *                 required={"file"},
-     *                 @OA\Property(
-     *                     property="file",
-     *                     type="string",
-     *                     format="binary",
-     *                     description="File to upload"
-     *                 )
-     *             )
-     *         )
-     *     ),
-     *     @OA\Response(
-     *         response=200,
-     *         description="File uploaded successfully"
-     *     )
-     * )
-     */
-    public function uploadFile()
+    private int $maxFileSize = 10 * 1024 * 1024; // 10MB
+
+    private array $allowedMimes = [
+        'image/jpeg',
+        'image/jpg',
+        'image/png',
+        'image/webp',
+        'image/svg+xml',
+        'image/gif',
+        'application/pdf',
+        'video/mp4',
+        'video/webm',
+    ];
+
+    private function ensureUploadDir(string $uploadPath): void
+    {
+        if (!is_dir($uploadPath)) {
+            mkdir($uploadPath, 0755, true);
+        }
+    }
+
+    private function getFileType(string $mimetype): string
+    {
+        if (str_starts_with($mimetype, 'image/'))
+            return 'image';
+        if (str_starts_with($mimetype, 'video/'))
+            return 'video';
+        if ($mimetype === 'application/pdf')
+            return 'document';
+        return 'other';
+    }
+
+    private function flattenFilesArray(array $files): array
+    {
+        $flat = [];
+        $walk = function ($node) use (&$flat, &$walk) {
+            if ($node instanceof UploadedFile) {
+                $flat[] = $node;
+                return;
+            }
+            if (is_array($node)) {
+                foreach ($node as $child) {
+                    $walk($child);
+                }
+            }
+        };
+        $walk($files);
+        return $flat;
+    }
+
+    public function uploadFile(): ResponseInterface
     {
         $file = $this->request->getFile('file');
+        $uploadedBy = $this->request->getGet('uploadedBy');
+
         if (!$file || !$file->isValid()) {
             return $this->fail('No file provided', 400);
         }
 
-        $uploadPath = WRITEPATH . 'uploads/';
-        if (!is_dir($uploadPath)) {
-            mkdir($uploadPath, 0755, true);
+        if ($file->getSize() > $this->maxFileSize) {
+            return $this->fail('File size exceeds limit (10MB)', 400);
         }
 
-        $newName = $file->getRandomName();
-        $file->move($uploadPath, $newName);
+        $mime = (string) $file->getClientMimeType();
+        if (!in_array($mime, $this->allowedMimes, true)) {
+            return $this->fail("Invalid file type: {$mime}", 400);
+        }
 
-        $fileModel = new FileUpload();
+        $uploadPath = WRITEPATH . 'uploads' . DIRECTORY_SEPARATOR;
+        $this->ensureUploadDir($uploadPath);
+
+        $ext = $file->getClientExtension();
+        $newName = $ext ? (uniqid('', true) . '.' . $ext) : $file->getRandomName();
+
+        if (!$file->move($uploadPath, $newName)) {
+            return $this->fail('Failed to save uploaded file', 500);
+        }
+
+        $fileType = $this->getFileType($mime);
+
         $fileData = [
-            'id' => uniqid('file_'),
+            'id' => uniqid('file_', true),
             'filename' => $newName,
             'originalName' => $file->getClientName(),
-            'mimetype' => $file->getClientMimeType(),
+            'mimetype' => $mime,
             'size' => $file->getSize(),
             'path' => $uploadPath . $newName,
-            'url' => '/uploads/' . $newName
+            'url' => base_url('uploads/' . $newName),
+            'fileType' => $fileType,
+            'uploadedBy' => $uploadedBy,
         ];
+
+        $fileModel = new FileUpload();
         $fileModel->insert($fileData);
 
-        return $this->respond([
-            'success' => true,
-            'data' => $fileData
-        ]);
+        return $this->respond(['success' => true, 'data' => $fileData]);
     }
 
-    /**
-     * @OA\Post(
-     *     path="/api/admin/upload/multiple",
-     *     tags={"Upload"},
-     *     summary="Upload multiple files",
-     *     @OA\RequestBody(
-     *         required=true,
-     *         @OA\MediaType(
-     *             mediaType="multipart/form-data",
-     *             @OA\Schema(
-     *                 type="object",
-     *                 required={"files"},
-     *                 @OA\Property(
-     *                     property="files",
-     *                     type="array",
-     *                     @OA\Items(type="string", format="binary"),
-     *                     description="Files to upload"
-     *                 )
-     *             )
-     *         )
-     *     ),
-     *     @OA\Response(
-     *         response=200,
-     *         description="Files uploaded successfully"
-     *     )
-     * )
-     */
-    public function uploadFiles()
+    public function uploadFiles(): ResponseInterface
     {
-        $files = $this->request->getFiles();
+        $uploadedBy = $this->request->getGet('uploadedBy');
+
+        $all = $this->request->getFiles();
+        $flatFiles = $this->flattenFilesArray($all);
+
+        if (!$flatFiles || count($flatFiles) === 0) {
+            return $this->fail('No files provided', 400);
+        }
+
+        $uploadPath = WRITEPATH . 'uploads' . DIRECTORY_SEPARATOR;
+        $this->ensureUploadDir($uploadPath);
+
+        $fileModel = new FileUpload();
         $results = [];
-        
-        foreach ($files['files'] as $file) {
-            if ($file->isValid()) {
-                $uploadPath = WRITEPATH . 'uploads/';
-                $newName = $file->getRandomName();
-                $file->move($uploadPath, $newName);
-                
-                $results[] = [
-                    'filename' => $newName,
-                    'originalName' => $file->getClientName()
-                ];
-            }
+
+        foreach ($flatFiles as $file) {
+            if (!$file->isValid())
+                continue;
+            if ($file->getSize() > $this->maxFileSize)
+                continue;
+
+            $mime = (string) $file->getClientMimeType();
+            if (!in_array($mime, $this->allowedMimes, true))
+                continue;
+
+            $ext = $file->getClientExtension();
+            $newName = $ext ? (uniqid('', true) . '.' . $ext) : $file->getRandomName();
+
+            if (!$file->move($uploadPath, $newName))
+                continue;
+
+            $fileType = $this->getFileType($mime);
+
+            $row = [
+                'id' => uniqid('file_', true),
+                'filename' => $newName,
+                'originalName' => $file->getClientName(),
+                'mimetype' => $mime,
+                'size' => $file->getSize(),
+                'path' => $uploadPath . $newName,
+                'url' => base_url('uploads/' . $newName),
+                'fileType' => $fileType,
+                'uploadedBy' => $uploadedBy,
+            ];
+
+            $fileModel->insert($row);
+            $results[] = $row;
         }
+
+        if (count($results) === 0) {
+            return $this->fail('No valid files provided', 400);
+        }
+
+        return $this->respond(['success' => true, 'data' => $results]);
+    }
+
+    public function listFiles(): ResponseInterface
+    {
+        $fileModel = new FileUpload();
+        $uploadedBy = $this->request->getGet('uploadedBy');
+        $fileType = $this->request->getGet('fileType');
+        $search = $this->request->getGet('search');
+
+        if ($uploadedBy)
+            $fileModel->where('uploadedBy', $uploadedBy);
+        if ($fileType && $fileType !== 'all')
+            $fileModel->where('fileType', $fileType);
+
+        if ($search) {
+            $fileModel->groupStart()
+                ->like('originalName', $search)
+                ->orLike('filename', $search)
+                ->groupEnd();
+        }
+
+        $files = $fileModel->orderBy('createdAt', 'DESC')->findAll();
+
+        return $this->respond(['success' => true, 'data' => $files ?: []]);
+    }
+
+    public function getStats(): ResponseInterface
+    {
+        $db = \Config\Database::connect();
+
+        $total = (int) $db->table('file_uploads')->countAllResults();
+        $images = (int) $db->table('file_uploads')->where('fileType', 'image')->countAllResults();
+        $documents = (int) $db->table('file_uploads')->where('fileType', 'document')->countAllResults();
+        $videos = (int) $db->table('file_uploads')->where('fileType', 'video')->countAllResults();
+
+        $sumRow = $db->table('file_uploads')->selectSum('size')->get()->getRowArray();
+        $totalSize = (int) ($sumRow['size'] ?? 0);
 
         return $this->respond([
             'success' => true,
-            'data' => $results
+            'data' => [
+                'total' => $total,
+                'images' => $images,
+                'documents' => $documents,
+                'videos' => $videos,
+                'totalSize' => $totalSize,
+            ]
         ]);
     }
 
-    /**
-     * @OA\Get(
-     *     path="/api/admin/upload",
-     *     tags={"Upload"},
-     *     summary="List uploaded files",
-     *     @OA\Parameter(name="uploadedBy", in="query", required=false, @OA\Schema(type="string")),
-     *     @OA\Parameter(name="fileType", in="query", required=false, @OA\Schema(type="string")),
-     *     @OA\Parameter(name="search", in="query", required=false, @OA\Schema(type="string")),
-     *     @OA\Response(
-     *         response=200,
-     *         description="Files retrieved successfully"
-     *     )
-     * )
-     */
-    public function listFiles()
+    public function getFile(string $id = null): ResponseInterface
     {
-        try {
-            $fileModel = new FileUpload();
-            
-            // Get query parameters
-            $uploadedBy = $this->request->getGet('uploadedBy');
-            $fileType = $this->request->getGet('fileType');
-            $search = $this->request->getGet('search');
-            
-            // Apply filters
-            if ($uploadedBy) {
-                $fileModel->where('uploadedBy', $uploadedBy);
-            }
-            
-            if ($fileType) {
-                $fileModel->where('fileType', $fileType);
-            }
-            
-            if ($search) {
-                $fileModel->groupStart();
-                $fileModel->like('originalName', $search);
-                $fileModel->orLike('filename', $search);
-                $fileModel->groupEnd();
-            }
-            
-            $files = $fileModel->orderBy('createdAt', 'DESC')->findAll();
-
-            return $this->respond([
-                'success' => true,
-                'data' => $files ?: []
-            ]);
-        } catch (\Exception $e) {
-            return $this->respond([
-                'success' => true,
-                'data' => []
-            ]);
-        }
-    }
-
-    /**
-     * @OA\Get(
-     *     path="/api/admin/upload/stats",
-     *     tags={"Upload"},
-     *     summary="Get file statistics",
-     *     @OA\Response(
-     *         response=200,
-     *         description="Stats retrieved successfully"
-     *     )
-     * )
-     */
-    public function getStats()
-    {
-        try {
-            $fileModel = new FileUpload();
-            
-            // Get counts by file type
-            $total = $fileModel->countAllResults(false);
-            $images = $fileModel->where('fileType', 'image')->countAllResults(false);
-            $documents = $fileModel->where('fileType', 'document')->countAllResults(false);
-            $videos = $fileModel->where('fileType', 'video')->countAllResults(false);
-            
-            // Get total size
-            $db = \Config\Database::connect();
-            $totalSizeResult = $db->table('file_uploads')
-                ->selectSum('size')
-                ->get()
-                ->getRowArray();
-            $totalSize = (int) ($totalSizeResult['size'] ?? 0);
-            
-            return $this->respond([
-                'success' => true,
-                'data' => [
-                    'total' => $total,
-                    'images' => $images,
-                    'documents' => $documents,
-                    'videos' => $videos,
-                    'totalSize' => $totalSize
-                ]
-            ]);
-        } catch (\Exception $e) {
-            return $this->respond([
-                'success' => false,
-                'message' => 'Failed to retrieve file stats',
-                'data' => []
-            ], 500);
-        }
-    }
-
-    /**
-     * @OA\Get(
-     *     path="/api/admin/upload/{id}",
-     *     tags={"Upload"},
-     *     summary="Get file info",
-     *     @OA\Parameter(
-     *         name="id",
-     *         in="path",
-     *         required=true,
-     *         @OA\Schema(type="string")
-     *     ),
-     *     @OA\Response(
-     *         response=200,
-     *         description="File info retrieved successfully"
-     *     )
-     * )
-     */
-    public function getFile($id = null)
-    {
-        if ($id === null) {
-            $id = $this->request->getUri()->getSegment(3);
-        }
-        
-        if (!$id) {
+        if (!$id)
             return $this->fail('File ID is required', 400);
-        }
-        
+
         $fileModel = new FileUpload();
         $file = $fileModel->find($id);
 
-        if (!$file) {
+        if (!$file)
             return $this->failNotFound('File not found');
-        }
 
-        return $this->respond([
-            'success' => true,
-            'data' => $file
-        ]);
+        return $this->respond(['success' => true, 'data' => $file]);
     }
 
-    /**
-     * @OA\Delete(
-     *     path="/api/admin/upload/{id}",
-     *     tags={"Upload"},
-     *     summary="Delete a file",
-     *     @OA\Parameter(
-     *         name="id",
-     *         in="path",
-     *         required=true,
-     *         @OA\Schema(type="string")
-     *     ),
-     *     @OA\Response(
-     *         response=200,
-     *         description="File deleted successfully"
-     *     )
-     * )
-     */
-    public function deleteFile($id = null)
+    public function deleteFile(string $id = null): ResponseInterface
     {
-        if ($id === null) {
-            $id = $this->request->getUri()->getSegment(3);
-        }
-        
-        if (!$id) {
+        if (!$id)
             return $this->fail('File ID is required', 400);
-        }
-        
+
         $fileModel = new FileUpload();
         $file = $fileModel->find($id);
-        
-        if (!$file) {
-            return $this->failNotFound('File not found');
-        }
 
-        if (file_exists($file['path'])) {
-            unlink($file['path']);
+        if (!$file)
+            return $this->failNotFound('File not found');
+
+        if (!empty($file['path']) && is_file($file['path'])) {
+            @unlink($file['path']);
         }
 
         $fileModel->delete($id);
 
-        return $this->respond([
-            'success' => true,
-            'message' => 'File deleted successfully'
-        ]);
+        return $this->respond(['success' => true, 'message' => 'File deleted successfully']);
     }
 }

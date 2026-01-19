@@ -9,10 +9,12 @@ class FileUpload extends Model
     protected $table            = 'file_uploads';
     protected $primaryKey       = 'id';
     protected $useAutoIncrement = false;
-    protected $returnType       = 'array';
-    protected $useSoftDeletes   = false;
-    protected $protectFields    = true;
-    protected $allowedFields    = [
+
+    protected $returnType     = 'array';
+    protected $useSoftDeletes = false;
+    protected $protectFields  = true;
+
+    protected $allowedFields = [
         'id',
         'filename',
         'originalName',
@@ -26,10 +28,10 @@ class FileUpload extends Model
         'description',
         'altText',
         'createdAt',
-        'updatedAt'
+        'updatedAt',
     ];
 
-    protected $useTimestamps = false;
+    protected $useTimestamps = true;
     protected $dateFormat    = 'datetime';
     protected $createdField  = 'createdAt';
     protected $updatedField  = 'updatedAt';
