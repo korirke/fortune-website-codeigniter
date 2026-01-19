@@ -91,14 +91,14 @@ class Admin extends BaseController
         if ($id === null) {
             $id = $this->request->getUri()->getSegment(4);
         }
-        
+
         if (!$id) {
             return $this->fail('File ID is required', 400);
         }
-        
+
         $fileModel = new FileUpload();
         $file = $fileModel->find($id);
-        
+
         if (!$file) {
             return $this->failNotFound('File not found');
         }
@@ -108,7 +108,7 @@ class Admin extends BaseController
         }
 
         $fileModel->delete($id);
-        
+
         return $this->respond([
             'success' => true,
             'message' => 'File deleted successfully'
@@ -127,16 +127,16 @@ class Admin extends BaseController
     public function updateNavigation()
     {
         $db = \Config\Database::connect();
-        
+
         try {
             $data = $this->request->getJSON(true);
-            
+
             $db->transStart();
-            
+
             $navModel = new NavItem();
             $dropdownDataModel = new DropdownData();
             $dropdownItemModel = new DropdownItem();
-            
+
             // Update nav items
             if (isset($data['navItems']) && is_array($data['navItems'])) {
                 foreach ($data['navItems'] as $item) {
@@ -148,7 +148,7 @@ class Admin extends BaseController
                         'hasDropdown' => $item['hasDropdown'] ?? false,
                         'isActive' => isset($item['isActive']) ? $item['isActive'] : true
                     ];
-                    
+
                     $existing = $navModel->where('key', $item['key'])->first();
                     if ($existing) {
                         $navModel->update($existing['id'], $navItemData);
@@ -157,22 +157,22 @@ class Admin extends BaseController
                     }
                 }
             }
-            
+
             // Update dropdown data
             if (isset($data['dropdownData']) && is_array($data['dropdownData'])) {
                 foreach ($data['dropdownData'] as $key => $dropdownInfo) {
                     $navItem = $navModel->where('key', $key)->first();
-                    
+
                     if ($navItem && $dropdownInfo) {
                         $existingDropdown = $dropdownDataModel->where('navItemId', $navItem['id'])->first();
-                        
+
                         if ($existingDropdown) {
                             // Update existing dropdown
                             $dropdownDataModel->update($existingDropdown['id'], [
                                 'title' => $dropdownInfo['title'] ?? 'Dropdown Title'
                             ]);
                             $dropdownId = $existingDropdown['id'];
-                            
+
                             // Delete old dropdown items
                             $dropdownItemModel->where('dropdownDataId', $dropdownId)->delete();
                         } else {
@@ -182,7 +182,7 @@ class Admin extends BaseController
                                 'title' => $dropdownInfo['title'] ?? 'Dropdown Title'
                             ]);
                         }
-                        
+
                         // Create dropdown items
                         if (isset($dropdownInfo['items']) && is_array($dropdownInfo['items'])) {
                             foreach ($dropdownInfo['items'] as $index => $item) {
@@ -190,8 +190,8 @@ class Admin extends BaseController
                                     'name' => $item['name'],
                                     'href' => $item['href'],
                                     'description' => $item['description'] ?? '',
-                                    'features' => isset($item['features']) && is_array($item['features']) 
-                                        ? json_encode($item['features']) 
+                                    'features' => isset($item['features']) && is_array($item['features'])
+                                        ? json_encode($item['features'])
                                         : json_encode([]),
                                     'position' => $index + 1,
                                     'isActive' => isset($item['isActive']) ? $item['isActive'] : true,
@@ -202,13 +202,13 @@ class Admin extends BaseController
                     }
                 }
             }
-            
+
             $db->transComplete();
-            
+
             if ($db->transStatus() === false) {
                 return $this->fail('Failed to update navigation', 500);
             }
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Navigation updated successfully'
@@ -234,21 +234,21 @@ class Admin extends BaseController
         if ($id === null) {
             $id = $this->request->getUri()->getSegment(4);
         }
-        
+
         if (!$id) {
             return $this->fail('Navigation item ID is required', 400);
         }
-        
+
         try {
             $navModel = new NavItem();
             $navItem = $navModel->find($id);
-            
+
             if (!$navItem) {
                 return $this->failNotFound('Navigation item not found');
             }
-            
+
             $navModel->delete($id);
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Navigation item deleted successfully'
@@ -272,7 +272,7 @@ class Admin extends BaseController
         try {
             $data = $this->request->getJSON(true);
             $themeModel = new ThemeConfig();
-            
+
             $theme = $themeModel->where('isActive', true)->first();
             if ($theme) {
                 $themeModel->update($theme['id'], $data);
@@ -281,7 +281,7 @@ class Admin extends BaseController
                 $data['isActive'] = true;
                 $themeModel->insert($data);
             }
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Theme updated successfully'
@@ -304,17 +304,17 @@ class Admin extends BaseController
     public function updateHeroDashboards()
     {
         $db = \Config\Database::connect();
-        
+
         try {
             $data = $this->request->getJSON(true);
-            
+
             $db->transStart();
-            
+
             $dashboardModel = new HeroDashboard();
-            
+
             // Delete all existing dashboards
             $dashboardModel->where('1=1')->delete();
-            
+
             // Insert new dashboards
             if (isset($data['dashboards']) && is_array($data['dashboards'])) {
                 foreach ($data['dashboards'] as $index => $dashboard) {
@@ -325,13 +325,13 @@ class Admin extends BaseController
                         'position' => $index + 1,
                         'isActive' => true
                     ];
-                    
+
                     if ($dashboard['type'] === 'content') {
-                        $dashboardData['stats'] = isset($dashboard['stats']) && is_array($dashboard['stats']) 
-                            ? json_encode($dashboard['stats']) 
+                        $dashboardData['stats'] = isset($dashboard['stats']) && is_array($dashboard['stats'])
+                            ? json_encode($dashboard['stats'])
                             : json_encode([]);
-                        $dashboardData['features'] = isset($dashboard['features']) && is_array($dashboard['features']) 
-                            ? json_encode($dashboard['features']) 
+                        $dashboardData['features'] = isset($dashboard['features']) && is_array($dashboard['features'])
+                            ? json_encode($dashboard['features'])
                             : json_encode([]);
                         $dashboardData['imageUrl'] = null;
                     } elseif ($dashboard['type'] === 'image') {
@@ -339,17 +339,17 @@ class Admin extends BaseController
                         $dashboardData['features'] = null;
                         $dashboardData['imageUrl'] = $dashboard['imageUrl'] ?? null;
                     }
-                    
+
                     $dashboardModel->insert($dashboardData);
                 }
             }
-            
+
             $db->transComplete();
-            
+
             if ($db->transStatus() === false) {
                 return $this->fail('Failed to update hero dashboards', 500);
             }
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Hero dashboards updated successfully'
@@ -375,15 +375,15 @@ class Admin extends BaseController
         try {
             $data = $this->request->getJSON(true);
             $contentModel = new HeroContent();
-            
+
             $updateData = [
                 'trustBadge' => $data['trustBadge'] ?? 'Trusted by 5,000+ Companies',
                 'mainHeading' => $data['mainHeading'] ?? 'Transform Your',
                 'subHeading' => $data['subHeading'] ?? 'HR Operations',
                 'tagline' => $data['tagline'] ?? 'with AI-Powered Solutions',
                 'description' => $data['description'] ?? 'Streamline payroll, optimize talent management.',
-                'trustPoints' => isset($data['trustPoints']) && is_array($data['trustPoints']) 
-                    ? json_encode($data['trustPoints']) 
+                'trustPoints' => isset($data['trustPoints']) && is_array($data['trustPoints'])
+                    ? json_encode($data['trustPoints'])
                     : json_encode(['No Setup Fees', '24/7 Support', 'GDPR Compliant']),
                 'primaryCtaText' => $data['primaryCtaText'] ?? 'Start Free Trial',
                 'secondaryCtaText' => $data['secondaryCtaText'] ?? 'Schedule Demo',
@@ -392,7 +392,7 @@ class Admin extends BaseController
                 'phoneNumber' => $data['phoneNumber'] ?? '0733769149',
                 'chatWidgetUrl' => $data['chatWidgetUrl'] ?? 'https://rag-chat-widget.vercel.app/'
             ];
-            
+
             $content = $contentModel->where('isActive', true)->first();
             if ($content) {
                 $contentModel->update($content['id'], $updateData);
@@ -401,7 +401,7 @@ class Admin extends BaseController
                 $updateData['isActive'] = true;
                 $contentModel->insert($updateData);
             }
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Hero content updated successfully'
@@ -426,7 +426,7 @@ class Admin extends BaseController
         try {
             $clientModel = new Client();
             $clients = $clientModel->orderBy('position', 'ASC')->findAll();
-            
+
             return $this->respond([
                 'success' => true,
                 'data' => $clients ?: []
@@ -448,18 +448,18 @@ class Admin extends BaseController
     public function updateClients()
     {
         $db = \Config\Database::connect();
-        
+
         try {
             $data = $this->request->getJSON(true);
-            
+
             $db->transStart();
-            
+
             $clientModel = new Client();
-            
+
             // Get existing client IDs
             $existingClients = $clientModel->select('id')->findAll();
             $existingIds = array_column($existingClients, 'id');
-            
+
             // Get incoming IDs (exclude temp IDs)
             $incomingIds = [];
             if (isset($data['clients']) && is_array($data['clients'])) {
@@ -469,16 +469,16 @@ class Admin extends BaseController
                     }
                 }
             }
-            
+
             // Delete clients not in incoming data
             $idsToDelete = array_diff($existingIds, $incomingIds);
             if (!empty($idsToDelete)) {
                 $clientModel->whereIn('id', $idsToDelete)->delete();
             }
-            
+
             $createdCount = 0;
             $updatedCount = 0;
-            
+
             // Upsert clients
             if (isset($data['clients']) && is_array($data['clients'])) {
                 foreach ($data['clients'] as $client) {
@@ -490,9 +490,9 @@ class Admin extends BaseController
                         'position' => $client['position'] ?? 0,
                         'isActive' => isset($client['isActive']) ? $client['isActive'] : true
                     ];
-                    
+
                     $isUpdate = isset($client['id']) && !str_starts_with($client['id'], 'temp-');
-                    
+
                     if ($isUpdate) {
                         $existing = $clientModel->find($client['id']);
                         if ($existing) {
@@ -508,13 +508,13 @@ class Admin extends BaseController
                     }
                 }
             }
-            
+
             $db->transComplete();
-            
+
             if ($db->transStatus() === false) {
                 return $this->fail('Failed to update clients', 500);
             }
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Clients updated successfully',
@@ -545,21 +545,21 @@ class Admin extends BaseController
         if ($id === null) {
             $id = $this->request->getUri()->getSegment(4);
         }
-        
+
         if (!$id) {
             return $this->fail('Client ID is required', 400);
         }
-        
+
         try {
             $clientModel = new Client();
             $client = $clientModel->find($id);
-            
+
             if (!$client) {
                 return $this->failNotFound('Client not found');
             }
-            
+
             $clientModel->delete($id);
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Client deleted successfully'
@@ -583,12 +583,12 @@ class Admin extends BaseController
         try {
             $sectionModel = new SectionContent();
             $sections = $sectionModel->where('isActive', true)->findAll();
-            
+
             $sectionData = [];
             foreach ($sections as $section) {
                 $sectionData[$section['sectionKey']] = $section;
             }
-            
+
             return $this->respond([
                 'success' => true,
                 'data' => $sectionData
@@ -612,14 +612,14 @@ class Admin extends BaseController
         try {
             $data = $this->request->getJSON(true);
             $sectionModel = new SectionContent();
-            
+
             $updateData = [
                 'title' => $data['title'] ?? null,
                 'subtitle' => $data['subtitle'] ?? null,
                 'description' => $data['description'] ?? null,
                 'isActive' => isset($data['isActive']) ? $data['isActive'] : true
             ];
-            
+
             $existing = $sectionModel->where('sectionKey', $data['sectionKey'])->first();
             if ($existing) {
                 $sectionModel->update($existing['id'], $updateData);
@@ -627,7 +627,7 @@ class Admin extends BaseController
                 $updateData['sectionKey'] = $data['sectionKey'];
                 $sectionModel->insert($updateData);
             }
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Section content updated successfully'
@@ -650,17 +650,17 @@ class Admin extends BaseController
     public function updateServices()
     {
         $db = \Config\Database::connect();
-        
+
         try {
             $data = $this->request->getJSON(true);
-            
+
             $db->transStart();
-            
+
             $serviceModel = new Service();
-            
+
             // Delete all existing services
             $serviceModel->where('1=1')->delete();
-            
+
             // Insert new services
             if (isset($data['services']) && is_array($data['services'])) {
                 foreach ($data['services'] as $service) {
@@ -672,17 +672,17 @@ class Admin extends BaseController
                         'icon' => $service['icon'],
                         'color' => $service['color'],
                         'category' => $service['category'] ?? null,
-                        'features' => isset($service['features']) && is_array($service['features']) 
-                            ? json_encode($service['features']) 
+                        'features' => isset($service['features']) && is_array($service['features'])
+                            ? json_encode($service['features'])
                             : json_encode([]),
-                        'benefits' => isset($service['benefits']) && is_array($service['benefits']) 
-                            ? json_encode($service['benefits']) 
+                        'benefits' => isset($service['benefits']) && is_array($service['benefits'])
+                            ? json_encode($service['benefits'])
                             : json_encode([]),
-                        'processSteps' => isset($service['processSteps']) && is_array($service['processSteps']) 
-                            ? json_encode($service['processSteps']) 
+                        'processSteps' => isset($service['processSteps']) && is_array($service['processSteps'])
+                            ? json_encode($service['processSteps'])
                             : json_encode([]),
-                        'complianceItems' => isset($service['complianceItems']) && is_array($service['complianceItems']) 
-                            ? json_encode($service['complianceItems']) 
+                        'complianceItems' => isset($service['complianceItems']) && is_array($service['complianceItems'])
+                            ? json_encode($service['complianceItems'])
                             : json_encode([]),
                         'imageUrl' => $service['imageUrl'] ?? null,
                         'heroImageUrl' => $service['heroImageUrl'] ?? null,
@@ -698,21 +698,21 @@ class Admin extends BaseController
                         'price' => $service['price'] ?? null,
                         'buttonText' => $service['buttonText'] ?? 'Learn More',
                         'buttonLink' => $service['buttonLink'] ?? null,
-                        'metadata' => isset($service['metadata']) && (is_array($service['metadata']) || is_object($service['metadata'])) 
-                            ? json_encode($service['metadata']) 
+                        'metadata' => isset($service['metadata']) && (is_array($service['metadata']) || is_object($service['metadata']))
+                            ? json_encode($service['metadata'])
                             : $service['metadata'] ?? null
                     ];
-                    
+
                     $serviceModel->insert($serviceData);
                 }
             }
-            
+
             $db->transComplete();
-            
+
             if ($db->transStatus() === false) {
                 return $this->fail('Failed to update services', 500);
             }
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Services updated successfully'
@@ -738,21 +738,21 @@ class Admin extends BaseController
         if ($id === null) {
             $id = $this->request->getUri()->getSegment(4);
         }
-        
+
         if (!$id) {
             return $this->fail('Service ID is required', 400);
         }
-        
+
         try {
             $serviceModel = new Service();
             $service = $serviceModel->find($id);
-            
+
             if (!$service) {
                 return $this->failNotFound('Service not found');
             }
-            
+
             $serviceModel->delete($id);
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Service deleted successfully'
@@ -766,7 +766,7 @@ class Admin extends BaseController
      * @OA\Put(
      *     path="/api/admin/testimonials",
      *     tags={"Admin"},
-     *     summary="Update all testimonials",
+     *     summary="Update testimonials (upsert only, no implicit deletes)",
      *     security={{"bearerAuth":{}}},
      *     @OA\Response(response=200, description="Testimonials updated successfully")
      * )
@@ -774,89 +774,91 @@ class Admin extends BaseController
     public function updateTestimonials()
     {
         $db = \Config\Database::connect();
-        
+
         try {
             $data = $this->request->getJSON(true);
-            
+
+            if (!isset($data['testimonials']) || !is_array($data['testimonials'])) {
+                return $this->fail('testimonials array is required', 400);
+            }
+
+            $testimonialModel = new \App\Models\Testimonial();
+
             $db->transStart();
-            
-            $testimonialModel = new Testimonial();
-            
-            // Get existing testimonial IDs
-            $existingTestimonials = $testimonialModel->select('id')->findAll();
-            $existingIds = array_column($existingTestimonials, 'id');
-            
-            // Get incoming IDs (exclude temp IDs)
-            $incomingIds = [];
-            if (isset($data['testimonials']) && is_array($data['testimonials'])) {
-                foreach ($data['testimonials'] as $testimonial) {
-                    if (isset($testimonial['id']) && !str_starts_with($testimonial['id'], 'temp-')) {
-                        $incomingIds[] = $testimonial['id'];
-                    }
-                }
-            }
-            
-            // Delete testimonials not in incoming data
-            $idsToDelete = array_diff($existingIds, $incomingIds);
-            if (!empty($idsToDelete)) {
-                $testimonialModel->whereIn('id', $idsToDelete)->delete();
-            }
-            
+
             $createdCount = 0;
             $updatedCount = 0;
-            
-            // Upsert testimonials
-            if (isset($data['testimonials']) && is_array($data['testimonials'])) {
-                foreach ($data['testimonials'] as $testimonial) {
-                    $testimonialData = [
-                        'name' => trim($testimonial['name']),
-                        'role' => trim($testimonial['role']),
-                        'company' => trim($testimonial['company']),
-                        'content' => trim($testimonial['content']),
-                        'rating' => $testimonial['rating'] ?? 5,
-                        'avatar' => trim($testimonial['avatar']),
-                        'results' => isset($testimonial['results']) && is_array($testimonial['results']) 
-                            ? json_encode(array_values(array_filter(array_map('trim', $testimonial['results'])))) 
-                            : json_encode([]),
-                        'service' => isset($testimonial['service']) ? trim($testimonial['service']) : null,
-                        'category' => $testimonial['category'] ?? null,
-                        'isActive' => isset($testimonial['isActive']) ? $testimonial['isActive'] : true,
-                        'isFeatured' => $testimonial['isFeatured'] ?? false,
-                        'position' => $testimonial['position']
-                    ];
-                    
-                    $isUpdate = isset($testimonial['id']) && !str_starts_with($testimonial['id'], 'temp-');
-                    
-                    if ($isUpdate) {
-                        $existing = $testimonialModel->find($testimonial['id']);
-                        if ($existing) {
-                            $testimonialModel->update($testimonial['id'], $testimonialData);
-                            $updatedCount++;
-                        } else {
-                            $testimonialModel->insert($testimonialData);
-                            $createdCount++;
-                        }
+            $skippedCount = 0;
+
+            foreach ($data['testimonials'] as $testimonial) {
+                $name = trim((string) ($testimonial['name'] ?? ''));
+                $role = trim((string) ($testimonial['role'] ?? ''));
+                $company = trim((string) ($testimonial['company'] ?? ''));
+                $content = trim((string) ($testimonial['content'] ?? ''));
+
+                if ($name === '' || $role === '' || $company === '' || $content === '') {
+                    $skippedCount++;
+                    continue;
+                }
+
+                $isUpdate = isset($testimonial['id']) && $testimonial['id'] && !str_starts_with((string) $testimonial['id'], 'temp-');
+                $id = $isUpdate ? (string) $testimonial['id'] : uniqid('test_', true);
+
+                // Normalize results
+                $resultsArray = [];
+                if (isset($testimonial['results']) && is_array($testimonial['results'])) {
+                    $resultsArray = array_values(array_filter(array_map(
+                        fn($r) => trim((string) $r),
+                        $testimonial['results']
+                    ), fn($r) => $r !== ''));
+                }
+
+                $testimonialData = [
+                    'id' => $id,
+                    'name' => $name,
+                    'role' => $role,      // NOT NULL in DB
+                    'company' => $company,   // NOT NULL in DB
+                    'content' => $content,
+                    'rating' => isset($testimonial['rating']) ? (int) $testimonial['rating'] : 5,
+                    'avatar' => trim((string) ($testimonial['avatar'] ?? '')),
+                    'results' => json_encode($resultsArray),
+                    'service' => isset($testimonial['service']) && trim((string) $testimonial['service']) !== '' ? trim((string) $testimonial['service']) : null,
+                    'category' => isset($testimonial['category']) && trim((string) $testimonial['category']) !== '' ? trim((string) $testimonial['category']) : null,
+                    'isActive' => isset($testimonial['isActive']) ? (bool) $testimonial['isActive'] : true,
+                    'isFeatured' => isset($testimonial['isFeatured']) ? (bool) $testimonial['isFeatured'] : false,
+                    'position' => isset($testimonial['position']) ? (int) $testimonial['position'] : 0,
+                ];
+
+                if ($isUpdate) {
+                    $existing = $testimonialModel->find($id);
+                    if ($existing) {
+                        $testimonialModel->update($id, $testimonialData);
+                        $updatedCount++;
                     } else {
+                        // If client sent id but it doesn't exist, create it
                         $testimonialModel->insert($testimonialData);
                         $createdCount++;
                     }
+                } else {
+                    $testimonialModel->insert($testimonialData);
+                    $createdCount++;
                 }
             }
-            
+
             $db->transComplete();
-            
+
             if ($db->transStatus() === false) {
                 return $this->fail('Failed to update testimonials', 500);
             }
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Testimonials updated successfully',
                 'data' => [
                     'createdCount' => $createdCount,
                     'updatedCount' => $updatedCount,
-                    'deletedCount' => count($idsToDelete)
-                ]
+                    'skippedCount' => $skippedCount,
+                ],
             ]);
         } catch (\Exception $e) {
             $db->transRollback();
@@ -864,7 +866,6 @@ class Admin extends BaseController
             return $this->fail('Failed to update testimonials: ' . $e->getMessage(), 500);
         }
     }
-
     /**
      * @OA\Delete(
      *     path="/api/admin/testimonials/{id}",
@@ -876,33 +877,28 @@ class Admin extends BaseController
      */
     public function deleteTestimonial($id = null)
     {
-        if ($id === null) {
-            $id = $this->request->getUri()->getSegment(4);
-        }
-        
         if (!$id) {
             return $this->fail('Testimonial ID is required', 400);
         }
-        
+
         try {
-            $testimonialModel = new Testimonial();
+            $testimonialModel = new \App\Models\Testimonial();
             $testimonial = $testimonialModel->find($id);
-            
+
             if (!$testimonial) {
                 return $this->failNotFound('Testimonial not found');
             }
-            
+
             $testimonialModel->delete($id);
-            
+
             return $this->respond([
                 'success' => true,
-                'message' => 'Testimonial deleted successfully'
+                'message' => 'Testimonial deleted successfully',
             ]);
         } catch (\Exception $e) {
-            return $this->fail('Failed to delete testimonial', 500);
+            return $this->fail('Failed to delete testimonial: ' . $e->getMessage(), 500);
         }
     }
-
     /**
      * @OA\Put(
      *     path="/api/admin/stats",
@@ -915,17 +911,17 @@ class Admin extends BaseController
     public function updateStats()
     {
         $db = \Config\Database::connect();
-        
+
         try {
             $data = $this->request->getJSON(true);
-            
+
             $db->transStart();
-            
+
             $statModel = new Stat();
-            
+
             // Delete all existing stats
             $statModel->where('1=1')->delete();
-            
+
             // Insert new stats
             if (isset($data['stats']) && is_array($data['stats'])) {
                 foreach ($data['stats'] as $stat) {
@@ -937,17 +933,17 @@ class Admin extends BaseController
                         'isActive' => isset($stat['isActive']) ? $stat['isActive'] : true,
                         'position' => $stat['position']
                     ];
-                    
+
                     $statModel->insert($statData);
                 }
             }
-            
+
             $db->transComplete();
-            
+
             if ($db->transStatus() === false) {
                 return $this->fail('Failed to update stats', 500);
             }
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Stats updated successfully'
@@ -973,21 +969,21 @@ class Admin extends BaseController
         if ($id === null) {
             $id = $this->request->getUri()->getSegment(4);
         }
-        
+
         if (!$id) {
             return $this->fail('Stat ID is required', 400);
         }
-        
+
         try {
             $statModel = new Stat();
             $stat = $statModel->find($id);
-            
+
             if (!$stat) {
                 return $this->failNotFound('Stat not found');
             }
-            
+
             $statModel->delete($id);
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Stat deleted successfully'
@@ -1009,19 +1005,19 @@ class Admin extends BaseController
     public function updateFooter()
     {
         $db = \Config\Database::connect();
-        
+
         try {
             $data = $this->request->getJSON(true);
-            
+
             $db->transStart();
-            
+
             $footerSectionModel = new FooterSection();
             $footerLinkModel = new FooterLink();
-            
+
             // Delete existing footer data
             $footerLinkModel->where('1=1')->delete();
             $footerSectionModel->where('1=1')->delete();
-            
+
             // Create new footer sections and links
             if (isset($data['sections']) && is_array($data['sections'])) {
                 foreach ($data['sections'] as $section) {
@@ -1030,9 +1026,9 @@ class Admin extends BaseController
                         'position' => $section['position'],
                         'isActive' => isset($section['isActive']) ? $section['isActive'] : true
                     ];
-                    
+
                     $sectionId = $footerSectionModel->insert($sectionData);
-                    
+
                     // Create links for this section
                     if (isset($section['links']) && is_array($section['links'])) {
                         foreach ($section['links'] as $link) {
@@ -1047,13 +1043,13 @@ class Admin extends BaseController
                     }
                 }
             }
-            
+
             $db->transComplete();
-            
+
             if ($db->transStatus() === false) {
                 return $this->fail('Failed to update footer', 500);
             }
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Footer updated successfully'
@@ -1079,9 +1075,9 @@ class Admin extends BaseController
         try {
             $footerSectionModel = new FooterSection();
             $footerLinkModel = new FooterLink();
-            
+
             $sections = $footerSectionModel->where('isActive', true)->orderBy('position', 'ASC')->findAll();
-            
+
             foreach ($sections as &$section) {
                 $section['links'] = $footerLinkModel
                     ->where('footerSectionId', $section['id'])
@@ -1089,7 +1085,7 @@ class Admin extends BaseController
                     ->orderBy('position', 'ASC')
                     ->findAll();
             }
-            
+
             return $this->respond([
                 'success' => true,
                 'data' => ['sections' => $sections]
@@ -1111,17 +1107,17 @@ class Admin extends BaseController
     public function updateContactInfo()
     {
         $db = \Config\Database::connect();
-        
+
         try {
             $data = $this->request->getJSON(true);
-            
+
             $db->transStart();
-            
+
             $contactModel = new ContactInfo();
-            
+
             // Delete all existing contact info
             $contactModel->where('1=1')->delete();
-            
+
             // Insert new contact info
             if (isset($data['contactInfo']) && is_array($data['contactInfo'])) {
                 foreach ($data['contactInfo'] as $info) {
@@ -1135,13 +1131,13 @@ class Admin extends BaseController
                     ]);
                 }
             }
-            
+
             $db->transComplete();
-            
+
             if ($db->transStatus() === false) {
                 return $this->fail('Failed to update contact info', 500);
             }
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Contact info updated successfully'
@@ -1167,7 +1163,7 @@ class Admin extends BaseController
         try {
             $contactModel = new ContactInfo();
             $contactInfo = $contactModel->where('isActive', true)->orderBy('position', 'ASC')->findAll();
-            
+
             return $this->respond([
                 'success' => true,
                 'data' => $contactInfo ?: []
@@ -1189,17 +1185,17 @@ class Admin extends BaseController
     public function updateSocialLinks()
     {
         $db = \Config\Database::connect();
-        
+
         try {
             $data = $this->request->getJSON(true);
-            
+
             $db->transStart();
-            
+
             $socialModel = new SocialLink();
-            
+
             // Delete all existing social links
             $socialModel->where('1=1')->delete();
-            
+
             // Insert new social links
             if (isset($data['socialLinks']) && is_array($data['socialLinks'])) {
                 foreach ($data['socialLinks'] as $link) {
@@ -1212,13 +1208,13 @@ class Admin extends BaseController
                     ]);
                 }
             }
-            
+
             $db->transComplete();
-            
+
             if ($db->transStatus() === false) {
                 return $this->fail('Failed to update social links', 500);
             }
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Social links updated successfully'
@@ -1244,7 +1240,7 @@ class Admin extends BaseController
         try {
             $socialModel = new SocialLink();
             $links = $socialModel->where('isActive', true)->orderBy('position', 'ASC')->findAll();
-            
+
             return $this->respond([
                 'success' => true,
                 'data' => $links ?: []
@@ -1268,7 +1264,7 @@ class Admin extends BaseController
         try {
             $data = $this->request->getJSON(true);
             $pageModel = new PageContent();
-            
+
             $updateData = [
                 'title' => $data['title'] ?? null,
                 'subtitle' => $data['subtitle'] ?? null,
@@ -1283,12 +1279,12 @@ class Admin extends BaseController
                 'ctaLink' => $data['ctaLink'] ?? null,
                 'ctaSecondaryText' => $data['ctaSecondaryText'] ?? null,
                 'ctaSecondaryLink' => $data['ctaSecondaryLink'] ?? null,
-                'metadata' => isset($data['metadata']) && (is_array($data['metadata']) || is_object($data['metadata'])) 
-                    ? json_encode($data['metadata']) 
+                'metadata' => isset($data['metadata']) && (is_array($data['metadata']) || is_object($data['metadata']))
+                    ? json_encode($data['metadata'])
                     : $data['metadata'] ?? null,
                 'isActive' => isset($data['isActive']) ? $data['isActive'] : true
             ];
-            
+
             $existing = $pageModel->where('pageKey', $data['pageKey'])->first();
             if ($existing) {
                 $result = $pageModel->update($existing['id'], $updateData);
@@ -1298,7 +1294,7 @@ class Admin extends BaseController
                 $pageModel->insert($updateData);
                 $pageContent = $pageModel->where('pageKey', $data['pageKey'])->first();
             }
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Page content updated successfully',
@@ -1324,20 +1320,20 @@ class Admin extends BaseController
         try {
             $data = $this->request->getJSON(true);
             $pageKeys = $data['pageKeys'] ?? [];
-            
+
             if (empty($pageKeys) || !is_array($pageKeys)) {
                 return $this->fail('pageKeys array is required', 400);
             }
-            
+
             $pageModel = new PageContent();
             $pageContents = $pageModel->whereIn('pageKey', $pageKeys)->findAll();
-            
+
             // Organize results by pageKey
             $result = [];
             foreach ($pageContents as $content) {
                 $result[$content['pageKey']] = $content;
             }
-            
+
             return $this->respond([
                 'success' => true,
                 'data' => $result,
@@ -1363,19 +1359,19 @@ class Admin extends BaseController
         if ($pageKey === null) {
             $pageKey = $this->request->getUri()->getSegment(4);
         }
-        
+
         if (!$pageKey) {
             return $this->fail('Page key is required', 400);
         }
-        
+
         try {
             $pageModel = new PageContent();
             $page = $pageModel->where('pageKey', $pageKey)->first();
-            
+
             if (!$page) {
                 return $this->failNotFound("Page content not found for key: {$pageKey}. Please ensure the database is properly seeded.");
             }
-            
+
             return $this->respond([
                 'success' => true,
                 'data' => $page
@@ -1397,14 +1393,14 @@ class Admin extends BaseController
     public function updateCallToActions()
     {
         $db = \Config\Database::connect();
-        
+
         try {
             $data = $this->request->getJSON(true);
-            
+
             $db->transStart();
-            
+
             $ctaModel = new CallToAction();
-            
+
             // Get all unique page keys from the request
             $pageKeys = [];
             if (isset($data['ctas']) && is_array($data['ctas'])) {
@@ -1415,12 +1411,12 @@ class Admin extends BaseController
                 }
             }
             $pageKeys = array_unique($pageKeys);
-            
+
             // Delete existing CTAs for these pages
             foreach ($pageKeys as $pageKey) {
                 $ctaModel->where('pageKey', $pageKey)->delete();
             }
-            
+
             // Create new CTAs
             if (isset($data['ctas']) && is_array($data['ctas'])) {
                 foreach ($data['ctas'] as $cta) {
@@ -1439,13 +1435,13 @@ class Admin extends BaseController
                     ]);
                 }
             }
-            
+
             $db->transComplete();
-            
+
             if ($db->transStatus() === false) {
                 return $this->fail('Failed to update call-to-actions', 500);
             }
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Call-to-actions updated successfully'
@@ -1471,11 +1467,11 @@ class Admin extends BaseController
         if ($pageKey === null) {
             $pageKey = $this->request->getUri()->getSegment(4);
         }
-        
+
         if (!$pageKey) {
             return $this->fail('Page key is required', 400);
         }
-        
+
         try {
             $db = \Config\Database::connect();
             $ctas = $db->table('call_to_actions')
@@ -1484,7 +1480,7 @@ class Admin extends BaseController
                 ->orderBy('position', 'ASC')
                 ->get()
                 ->getResultArray();
-            
+
             return $this->respond([
                 'success' => true,
                 'data' => $ctas ?: []
@@ -1508,7 +1504,7 @@ class Admin extends BaseController
         try {
             $submissionModel = new ContactSubmission();
             $submissions = $submissionModel->orderBy('createdAt', 'DESC')->findAll();
-            
+
             return $this->respond([
                 'success' => true,
                 'data' => $submissions ?: []
@@ -1532,22 +1528,22 @@ class Admin extends BaseController
         if ($id === null) {
             $id = $this->request->getUri()->getSegment(4);
         }
-        
+
         if (!$id) {
             return $this->fail('Contact submission ID is required', 400);
         }
-        
+
         try {
             $data = $this->request->getJSON(true);
             $submissionModel = new ContactSubmission();
-            
+
             $submission = $submissionModel->find($id);
             if (!$submission) {
                 return $this->failNotFound('Contact submission not found');
             }
-            
+
             $submissionModel->update($id, ['status' => $data['status']]);
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Status updated successfully'
@@ -1571,21 +1567,21 @@ class Admin extends BaseController
         if ($id === null) {
             $id = $this->request->getUri()->getSegment(4);
         }
-        
+
         if (!$id) {
             return $this->fail('Contact submission ID is required', 400);
         }
-        
+
         try {
             $submissionModel = new ContactSubmission();
             $submission = $submissionModel->find($id);
-            
+
             if (!$submission) {
                 return $this->failNotFound('Contact submission not found');
             }
-            
+
             $submissionModel->delete($id);
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Submission deleted successfully'

@@ -6,13 +6,14 @@ use CodeIgniter\Model;
 
 class Testimonial extends Model
 {
-    protected $table            = 'testimonials';
-    protected $primaryKey       = 'id';
+    protected $table = 'testimonials';
+    protected $primaryKey = 'id';
     protected $useAutoIncrement = false;
-    protected $returnType       = 'array';
-    protected $useSoftDeletes   = false;
-    protected $protectFields    = true;
-    protected $allowedFields    = [
+    protected $returnType = 'array';
+    protected $useSoftDeletes = false;
+    protected $protectFields = true;
+
+    protected $allowedFields = [
         'id',
         'name',
         'role',
@@ -27,11 +28,11 @@ class Testimonial extends Model
         'isFeatured',
         'position',
         'createdAt',
-        'updatedAt'
+        'updatedAt',
     ];
 
-    protected $useTimestamps = false;
-    protected $dateFormat    = 'datetime';
-    protected $createdField  = 'createdAt';
-    protected $updatedField  = 'updatedAt';
+    protected $useTimestamps = true;
+    protected $dateFormat = 'datetime';
+    protected $createdField = 'createdAt';
+    protected $updatedField = 'updatedAt';
 }
