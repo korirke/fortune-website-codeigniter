@@ -15,56 +15,83 @@ class Jobs extends BaseController
     // Helpers
     // =========================================================
 
+    private function normalizePayload(array $data): array
+    {
+        foreach ($data as $k => $v) {
+            if (is_string($v)) {
+                $v = trim($v);
+                $data[$k] = ($v === '') ? null : $v;
+            }
+        }
+        return $data;
+    }
+
+    private function assertCategoryExists(?string $categoryId): ?array
+    {
+        if (!$categoryId)
+            return ['categoryId' => 'Category is required'];
+
+        $categoryModel = new JobCategory();
+        if (!$categoryModel->find($categoryId)) {
+            return ['categoryId' => 'Invalid category selected'];
+        }
+        return null;
+    }
+
+    /**
+     * Draft must satisfy
+     */
     private function validateJobData(array $data, bool $isDraft = false): array
     {
         $errors = [];
 
-        // Required fields for non-draft
+        // Title required always
+        if (empty($data['title']) || strlen(trim($data['title'])) < 3) {
+            $errors['title'] = 'Job title is required and must be at least 3 characters';
+        }
+
+        // Category required always 
+        if (empty($data['categoryId'])) {
+            $errors['categoryId'] = 'Category is required';
+        }
+
+        if (empty($data['description'])) {
+            $errors['description'] = 'Description is required ';
+        }
+
+        if (empty($data['location'])) {
+            $errors['location'] = 'Location is required ';
+        }
+
+        // Submit-only stricter rules
         if (!$isDraft) {
-            if (empty($data['title']) || strlen(trim($data['title'])) < 3) {
-                $errors['title'] = 'Job title is required and must be at least 3 characters';
+            if (!empty($data['description']) && strlen(trim($data['description'])) < 50) {
+                $errors['description'] = 'Job description must be at least 50 characters';
             }
 
-            if (empty($data['description']) || strlen(trim($data['description'])) < 50) {
-                $errors['description'] = 'Job description is required and must be at least 50 characters';
-            }
-
-            if (empty($data['categoryId'])) {
-                $errors['categoryId'] = 'Category is required';
-            }
-
-            if (empty($data['location'])) {
-                $errors['location'] = 'Location is required';
-            }
-
-            // Salary validation
+            // Salary validation (submit only)
             if (isset($data['salaryType'])) {
                 if ($data['salaryType'] === 'RANGE') {
-                    if (empty($data['salaryMin']) || $data['salaryMin'] <= 0) {
+                    if (empty($data['salaryMin']) || (int) $data['salaryMin'] <= 0) {
                         $errors['salaryMin'] = 'Minimum salary must be greater than 0';
                     }
-                    if (empty($data['salaryMax']) || $data['salaryMax'] <= 0) {
+                    if (empty($data['salaryMax']) || (int) $data['salaryMax'] <= 0) {
                         $errors['salaryMax'] = 'Maximum salary must be greater than 0';
                     }
-                    if (!empty($data['salaryMin']) && !empty($data['salaryMax']) && $data['salaryMin'] >= $data['salaryMax']) {
+                    if (!empty($data['salaryMin']) && !empty($data['salaryMax']) && (int) $data['salaryMin'] >= (int) $data['salaryMax']) {
                         $errors['salaryMax'] = 'Maximum salary must be greater than minimum salary';
                     }
                 }
 
                 if ($data['salaryType'] === 'SPECIFIC') {
-                    if (empty($data['specificSalary']) || $data['specificSalary'] <= 0) {
+                    if (empty($data['specificSalary']) || (int) $data['specificSalary'] <= 0) {
                         $errors['specificSalary'] = 'Specific salary must be greater than 0';
                     }
                 }
             }
-        } else {
-            // Minimal validation for draft
-            if (empty($data['title'])) {
-                $errors['title'] = 'Job title is required even for draft';
-            }
         }
 
-        // Expiry date validation
+        // Expiry date validation 
         if (!empty($data['expiresAt'])) {
             $expiryDate = strtotime($data['expiresAt']);
             $tomorrow = strtotime('tomorrow midnight');
@@ -78,11 +105,13 @@ class Jobs extends BaseController
 
     private function determineJobStatus(array $data, bool $isDraft): string
     {
-        if ($isDraft) return 'DRAFT';
+        if ($isDraft)
+            return 'DRAFT';
 
         $requiredFields = ['title', 'description', 'categoryId', 'location'];
         foreach ($requiredFields as $field) {
-            if (empty($data[$field])) return 'DRAFT';
+            if (empty($data[$field]))
+                return 'DRAFT';
         }
 
         if (!empty($data['description']) && strlen(trim($data['description'])) < 50) {
@@ -96,7 +125,8 @@ class Jobs extends BaseController
     {
         $out = [];
         foreach ($data as $key => $value) {
-            if (!in_array($key, $allowedFields, true)) continue;
+            if (!in_array($key, $allowedFields, true))
+                continue;
             $out[$key] = ($value === '' || $value === null) ? null : $value;
         }
         return $out;
@@ -111,17 +141,12 @@ class Jobs extends BaseController
 
     private function canManageJob(string $userId, array $job): bool
     {
-        // Owner
-        if (!empty($job['postedById']) && $job['postedById'] === $userId) {
+        if (!empty($job['postedById']) && $job['postedById'] === $userId)
             return true;
-        }
 
-        // Admin
-        if ($this->isUserAdmin($userId)) {
+        if ($this->isUserAdmin($userId))
             return true;
-        }
 
-        // Company member
         if (!empty($job['companyId'])) {
             $employerModel = new \App\Models\EmployerProfile();
             $employer = $employerModel
@@ -134,19 +159,14 @@ class Jobs extends BaseController
         return false;
     }
 
-    /**
-     * Find job by primary key OR slug.
-     * Returns job row array or null.
-     */
     private function findJobByIdOrSlug(string $idOrSlug): ?array
     {
         $jobModel = new Job();
 
-        // Try ID
         $job = $jobModel->find($idOrSlug);
-        if ($job) return $job;
+        if ($job)
+            return $job;
 
-        // Try slug
         $job = $jobModel->where('slug', $idOrSlug)->first();
         return $job ?: null;
     }
@@ -156,7 +176,8 @@ class Jobs extends BaseController
         $jobModel = new Job();
         $job = $jobModel->find($jobId);
 
-        if (!$job) return [];
+        if (!$job)
+            return [];
 
         // Company
         $companyModel = new \App\Models\Company();
@@ -177,8 +198,8 @@ class Jobs extends BaseController
         $postedBy = $userModel->select('firstName, lastName, email')->find($job['postedById']);
         $job['postedBy'] = $postedBy ? [
             'firstName' => $postedBy['firstName'],
-            'lastName'  => $postedBy['lastName'],
-            'email'     => $postedBy['email'],
+            'lastName' => $postedBy['lastName'],
+            'email' => $postedBy['email'],
         ] : null;
 
         // Skills
@@ -193,7 +214,7 @@ class Jobs extends BaseController
                     'id' => $js['id'],
                     'jobId' => $js['jobId'],
                     'skillId' => $js['skillId'],
-                    'required' => (bool)($js['required'] ?? false),
+                    'required' => (bool) ($js['required'] ?? false),
                     'createdAt' => $js['createdAt'] ?? null,
                     'skill' => $skill,
                 ];
@@ -249,22 +270,22 @@ class Jobs extends BaseController
 
     // =========================================================
     // PUBLIC: GET JOB (by id OR slug)
-    // - ACTIVE jobs are public
-    // - Non-ACTIVE require logged-in owner/admin/company-member
     // =========================================================
     public function getJobById($idOrSlug = null)
     {
         try {
-            if (!$idOrSlug) return $this->failNotFound('Job not found');
+            if (!$idOrSlug)
+                return $this->failNotFound('Job not found');
 
             $job = $this->findJobByIdOrSlug($idOrSlug);
-            if (!$job) return $this->failNotFound('Job not found');
+            if (!$job)
+                return $this->failNotFound('Job not found');
 
             $user = $this->request->user ?? null;
 
-            // If not ACTIVE, require permission
             if (($job['status'] ?? null) !== 'ACTIVE') {
-                if (!$user) return $this->failNotFound('Job not found');
+                if (!$user)
+                    return $this->failNotFound('Job not found');
 
                 $isAdmin = $this->isUserAdmin($user->id);
                 $canManage = $this->canManageJob($user->id, $job);
@@ -274,10 +295,9 @@ class Jobs extends BaseController
                 }
             }
 
-            // Views increment only for ACTIVE
             if (($job['status'] ?? null) === 'ACTIVE') {
                 $jobModel = new Job();
-                $jobModel->update($job['id'], ['views' => (int)($job['views'] ?? 0) + 1]);
+                $jobModel->update($job['id'], ['views' => (int) ($job['views'] ?? 0) + 1]);
             }
 
             return $this->respond([
@@ -293,20 +313,21 @@ class Jobs extends BaseController
 
     // =========================================================
     // AUTH: GET JOB FOR EDIT/MANAGE
-    // - This is what your edit page MUST call.
-    // - Always behind auth filter so $request->user is present.
     // =========================================================
     public function getManageJobById($id = null)
     {
         try {
             $user = $this->request->user ?? null;
-            if (!$user) return $this->fail('Unauthorized', 401);
+            if (!$user)
+                return $this->fail('Unauthorized', 401);
 
-            if (!$id) return $this->failNotFound('Job not found');
+            if (!$id)
+                return $this->failNotFound('Job not found');
 
             $jobModel = new Job();
             $job = $jobModel->find($id);
-            if (!$job) return $this->failNotFound('Job not found');
+            if (!$job)
+                return $this->failNotFound('Job not found');
 
             if (!$this->canManageJob($user->id, $job)) {
                 return $this->fail('You do not have permission to view this job', 403);
@@ -330,16 +351,23 @@ class Jobs extends BaseController
     {
         try {
             $user = $this->request->user ?? null;
-            if (!$user) return $this->fail('Unauthorized', 401);
+            if (!$user)
+                return $this->fail('Unauthorized', 401);
 
             $data = $this->request->getJSON(true) ?? [];
+            $data = $this->normalizePayload($data);
 
-            $isDraft = isset($data['isDraft']) ? (bool)$data['isDraft'] : false;
+            $isDraft = isset($data['isDraft']) ? (bool) $data['isDraft'] : false;
             unset($data['isDraft']);
 
             $validationErrors = $this->validateJobData($data, $isDraft);
             if (!empty($validationErrors)) {
                 return $this->fail(['message' => 'Validation failed', 'errors' => $validationErrors], 400);
+            }
+
+            $catError = $this->assertCategoryExists($data['categoryId'] ?? null);
+            if ($catError) {
+                return $this->fail(['message' => 'Validation failed', 'errors' => $catError], 400);
             }
 
             $jobModel = new Job();
@@ -360,17 +388,13 @@ class Jobs extends BaseController
                 $companyId = $employer['companyId'];
             }
 
-            if (!$companyId) return $this->fail('Company ID is required', 400);
+            if (!$companyId)
+                return $this->fail('Company ID is required', 400);
 
             // Verify company exists
             $companyModel = new \App\Models\Company();
-            if (!$companyModel->find($companyId)) return $this->failNotFound('Company not found');
-
-            // Verify category exists if provided
-            if (!empty($data['categoryId'])) {
-                $categoryModel = new JobCategory();
-                if (!$categoryModel->find($data['categoryId'])) return $this->failNotFound('Category not found');
-            }
+            if (!$companyModel->find($companyId))
+                return $this->failNotFound('Company not found');
 
             // Generate slug
             $baseSlug = strtolower(preg_replace('/[^a-z0-9]+/', '-', $data['title'] ?? 'job'));
@@ -385,27 +409,29 @@ class Jobs extends BaseController
             $domainIds = $data['domainIds'] ?? [];
             unset($data['skillIds'], $data['domainIds']);
 
-            // Prepare insert
+            $description = $data['description'];
+            $location = $data['location'];
+
             $jobData = [
                 'id' => uniqid('job_'),
                 'title' => $data['title'],
                 'slug' => $slug,
-                'description' => $data['description'] ?? null,
+                'description' => $description,
                 'responsibilities' => $data['responsibilities'] ?? null,
                 'requirements' => $data['requirements'] ?? null,
                 'benefits' => $data['benefits'] ?? null,
                 'niceToHave' => $data['niceToHave'] ?? null,
                 'type' => $data['type'] ?? 'FULL_TIME',
                 'experienceLevel' => $data['experienceLevel'] ?? 'MID_LEVEL',
-                'location' => $data['location'] ?? null,
-                'isRemote' => $data['isRemote'] ?? false,
+                'location' => $location,
+                'isRemote' => (bool) ($data['isRemote'] ?? false),
                 'salaryType' => $data['salaryType'] ?? 'NEGOTIABLE',
                 'salaryMin' => $data['salaryMin'] ?? null,
                 'salaryMax' => $data['salaryMax'] ?? null,
                 'specificSalary' => $data['specificSalary'] ?? null,
                 'currency' => $data['currency'] ?? 'KSH',
                 'companyId' => $companyId,
-                'categoryId' => $data['categoryId'] ?? null,
+                'categoryId' => $data['categoryId'],
                 'postedById' => $user->id,
                 'status' => $status,
                 'views' => 0,
@@ -476,45 +502,62 @@ class Jobs extends BaseController
     {
         try {
             $user = $this->request->user ?? null;
-            if (!$user) return $this->fail('Unauthorized', 401);
+            if (!$user)
+                return $this->fail('Unauthorized', 401);
 
             $jobModel = new Job();
             $job = $jobModel->find($id);
-            if (!$job) return $this->failNotFound('Job not found');
+            if (!$job)
+                return $this->failNotFound('Job not found');
 
-            // Permission
             if (!$this->canManageJob($user->id, $job)) {
                 return $this->fail('You do not have permission to update this job', 403);
             }
 
             $data = $this->request->getJSON(true) ?? [];
+            $data = $this->normalizePayload($data);
 
-            $isDraft = isset($data['isDraft']) ? (bool)$data['isDraft'] : false;
+            $isDraft = isset($data['isDraft']) ? (bool) $data['isDraft'] : false;
             unset($data['isDraft']);
 
-            // Status edit restriction
-            $editableStatuses = ['DRAFT', 'PENDING', 'REJECTED'];
+            $editableStatuses = ['DRAFT', 'PENDING', 'REJECTED', 'CLOSED'];
             $isAdmin = $this->isUserAdmin($user->id);
             if (!$isAdmin && !in_array($job['status'], $editableStatuses, true)) {
                 return $this->fail('Cannot edit jobs with status: ' . $job['status'], 403);
             }
 
-            // Validate
             $validationErrors = $this->validateJobData($data, $isDraft);
             if (!empty($validationErrors)) {
                 return $this->fail(['message' => 'Validation failed', 'errors' => $validationErrors], 400);
             }
 
-            // Extract nested
+            $catError = $this->assertCategoryExists($data['categoryId'] ?? null);
+            if ($catError) {
+                return $this->fail(['message' => 'Validation failed', 'errors' => $catError], 400);
+            }
+
             $skillIds = $data['skillIds'] ?? null;
             $domainIds = $data['domainIds'] ?? null;
             unset($data['skillIds'], $data['domainIds']);
 
             $allowedFields = [
-                'title', 'description', 'responsibilities', 'requirements', 'benefits', 'niceToHave',
-                'type', 'experienceLevel', 'location', 'isRemote',
-                'salaryType', 'salaryMin', 'salaryMax', 'specificSalary', 'currency',
-                'categoryId', 'expiresAt'
+                'title',
+                'description',
+                'responsibilities',
+                'requirements',
+                'benefits',
+                'niceToHave',
+                'type',
+                'experienceLevel',
+                'location',
+                'isRemote',
+                'salaryType',
+                'salaryMin',
+                'salaryMax',
+                'specificSalary',
+                'currency',
+                'categoryId',
+                'expiresAt'
             ];
 
             $updateData = $this->sanitizeUpdateData($data, $allowedFields);
@@ -524,7 +567,6 @@ class Jobs extends BaseController
                 $updateData['expiresAt'] = date('Y-m-d H:i:s', strtotime($updateData['expiresAt']));
             }
 
-            // Status transition logic
             if (in_array($job['status'], ['DRAFT', 'REJECTED'], true)) {
                 if ($isDraft) {
                     $updateData['status'] = 'DRAFT';
@@ -541,7 +583,6 @@ class Jobs extends BaseController
 
             $jobModel->update($id, $updateData);
 
-            // Update skills if provided
             if ($skillIds !== null) {
                 $jobSkillModel = new \App\Models\JobSkill();
                 $jobSkillModel->where('jobId', $id)->delete();
@@ -594,20 +635,47 @@ class Jobs extends BaseController
     {
         try {
             $user = $this->request->user ?? null;
-            if (!$user) return $this->fail('Unauthorized', 401);
+            if (!$user)
+                return $this->fail('Unauthorized', 401);
 
             $jobModel = new Job();
             $job = $jobModel->find($id);
-            if (!$job) return $this->failNotFound('Job not found');
+            if (!$job)
+                return $this->failNotFound('Job not found');
 
             if (!$this->canManageJob($user->id, $job)) {
                 return $this->fail('You do not have permission to delete this job', 403);
             }
 
+            $applicationModel = new \App\Models\Application();
+            $appCount = (int) $applicationModel->where('jobId', $id)->countAllResults();
+
+            if ($appCount > 0) {
+                return $this->respond([
+                    'success' => false,
+                    'message' => 'Cannot delete job with existing applications',
+                    'errorCode' => 'JOB_HAS_APPLICATIONS',
+                    'data' => [
+                        'jobId' => $id,
+                        'applications' => $appCount,
+                        'suggestedActions' => ['CLOSE', 'ARCHIVE'],
+                    ],
+                ], 409);
+            }
+
+            $db = \Config\Database::connect();
+            $db->transStart();
+
             (new \App\Models\JobSkill())->where('jobId', $id)->delete();
             (new \App\Models\JobDomain())->where('jobId', $id)->delete();
 
             $jobModel->delete($id);
+
+            $db->transComplete();
+
+            if ($db->transStatus() === false) {
+                return $this->respond(['success' => false, 'message' => 'Failed to delete job'], 500);
+            }
 
             $this->logAudit($user->id, 'JOB_DELETED', 'Job', $id, ['title' => $job['title']]);
 
@@ -628,7 +696,8 @@ class Jobs extends BaseController
     {
         try {
             $user = $this->request->user ?? null;
-            if (!$user) return $this->fail('Unauthorized', 401);
+            if (!$user)
+                return $this->fail('Unauthorized', 401);
 
             $jobModel = new Job();
 
@@ -639,7 +708,8 @@ class Jobs extends BaseController
             if ($role === 'EMPLOYER') {
                 $employerModel = new \App\Models\EmployerProfile();
                 $employer = $employerModel->where('userId', $user->id)->first();
-                if (!$employer) return $this->failNotFound('Employer profile not found');
+                if (!$employer)
+                    return $this->failNotFound('Employer profile not found');
                 $jobModel->where('companyId', $employer['companyId']);
             } elseif (!in_array($role, ['SUPER_ADMIN', 'HR_MANAGER'], true)) {
                 $jobModel->where('postedById', $user->id);
@@ -690,11 +760,13 @@ class Jobs extends BaseController
             }
 
             $user = $this->request->user ?? null;
-            if (!$user) return $this->fail('Unauthorized', 401);
+            if (!$user)
+                return $this->fail('Unauthorized', 401);
 
             $jobModel = new Job();
             $job = $jobModel->find($id);
-            if (!$job) return $this->failNotFound('Job not found');
+            if (!$job)
+                return $this->failNotFound('Job not found');
 
             if (!$this->canManageJob($user->id, $job)) {
                 return $this->fail('You do not have permission to change job status', 403);
@@ -746,8 +818,8 @@ class Jobs extends BaseController
             $categoryId = $this->request->getGet('categoryId');
             $status = $this->request->getGet('status') ?? 'ACTIVE';
 
-            $page = (int)($this->request->getGet('page') ?? 1);
-            $limit = (int)($this->request->getGet('limit') ?? 20);
+            $page = (int) ($this->request->getGet('page') ?? 1);
+            $limit = (int) ($this->request->getGet('limit') ?? 20);
             $skip = ($page - 1) * $limit;
 
             $db = \Config\Database::connect();
@@ -763,10 +835,14 @@ class Jobs extends BaseController
                     ->groupEnd();
             }
 
-            if ($location) $builder->like('jobs.location', $location);
-            if ($type) $builder->where('jobs.type', $type);
-            if ($experienceLevel) $builder->where('jobs.experienceLevel', $experienceLevel);
-            if ($categoryId) $builder->where('jobs.categoryId', $categoryId);
+            if ($location)
+                $builder->like('jobs.location', $location);
+            if ($type)
+                $builder->where('jobs.type', $type);
+            if ($experienceLevel)
+                $builder->where('jobs.experienceLevel', $experienceLevel);
+            if ($categoryId)
+                $builder->where('jobs.categoryId', $categoryId);
 
             $total = $builder->countAllResults(false);
 
@@ -799,10 +875,10 @@ class Jobs extends BaseController
                 'data' => [
                     'jobs' => $formattedJobs,
                     'pagination' => [
-                        'total' => (int)$total,
-                        'page' => (int)$page,
-                        'limit' => (int)$limit,
-                        'totalPages' => (int)ceil($total / $limit),
+                        'total' => (int) $total,
+                        'page' => (int) $page,
+                        'limit' => (int) $limit,
+                        'totalPages' => (int) ceil($total / $limit),
                     ],
                 ],
             ]);
@@ -835,8 +911,8 @@ class Jobs extends BaseController
                     'slug' => $category['slug'],
                     'description' => $category['description'] ?? null,
                     'icon' => $category['icon'] ?? null,
-                    'isActive' => (bool)($category['isActive'] ?? true),
-                    'jobCount' => (int)$jobCount,
+                    'isActive' => (bool) ($category['isActive'] ?? true),
+                    'jobCount' => (int) $jobCount,
                 ];
             }
 
@@ -857,7 +933,7 @@ class Jobs extends BaseController
     public function getNewestJobs()
     {
         try {
-            $limit = (int)($this->request->getGet('limit') ?? 8);
+            $limit = (int) ($this->request->getGet('limit') ?? 8);
 
             $jobModel = new Job();
             $jobs = $jobModel->where('status', 'ACTIVE')
@@ -940,22 +1016,27 @@ class Jobs extends BaseController
     {
         try {
             $user = $this->request->user ?? null;
-            if (!$user) return $this->fail('Unauthorized', 401);
+            if (!$user)
+                return $this->fail('Unauthorized', 401);
 
-            if (!$id) return $this->fail('Job ID is required', 400);
+            if (!$id)
+                return $this->fail('Job ID is required', 400);
 
             $data = $this->request->getJSON(true) ?? [];
+            $data = $this->normalizePayload($data);
 
             $jobModel = new Job();
             $job = $jobModel->find($id);
-            if (!$job) return $this->failNotFound('Job not found');
+            if (!$job)
+                return $this->failNotFound('Job not found');
 
             if ($job['status'] !== 'PENDING') {
                 return $this->fail('Only pending jobs can be moderated', 400);
             }
 
             $status = $data['status'] ?? null;
-            if (!$status) return $this->fail('Status is required', 400);
+            if (!$status)
+                return $this->fail('Status is required', 400);
 
             $updateData = [
                 'status' => $status,
