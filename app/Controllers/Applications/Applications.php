@@ -36,18 +36,176 @@ class Applications extends BaseController
     }
 
     /**
+     * ==========================================================
+     * AUTHZ HELPERS (COMPANY SCOPING)
+     * ==========================================================
+     */
+
+    private function getAuthUser()
+    {
+        return $this->request->user ?? null;
+    }
+
+    private function isAdminRole($role)
+    {
+        return in_array($role, ['SUPER_ADMIN', 'MODERATOR'], true);
+    }
+
+    /**
+     * Returns employerProfile row or null.
+     * employer_profiles has userId -> companyId relationship in your system.
+     */
+    private function getEmployerProfileByUserId($userId)
+    {
+        $db = \Config\Database::connect();
+        return $db->table('employer_profiles')
+            ->where('userId', $userId)
+            ->get()
+            ->getRowArray();
+    }
+
+    /**
+     * Returns companyId for employer-like roles (EMPLOYER/HR_MANAGER), or null if not found.
+     */
+    private function getCompanyIdForEmployerUser($user)
+    {
+        if (!$user)
+            return null;
+
+        // Treat HR_MANAGER similar to employer for data scoping.
+        if (!in_array($user->role ?? '', ['EMPLOYER', 'HR_MANAGER'], true)) {
+            return null;
+        }
+
+        $employerProfile = $this->getEmployerProfileByUserId($user->id);
+        return $employerProfile['companyId'] ?? null;
+    }
+
+    /**
+     * Enforce that a job belongs to employer company (unless admin).
+     */
+    private function authorizeJobAccess($jobId)
+    {
+        $user = $this->getAuthUser();
+        if (!$user)
+            return [false, $this->fail('Unauthorized', 401)];
+
+        if ($this->isAdminRole($user->role ?? '')) {
+            return [true, null];
+        }
+
+        $companyId = $this->getCompanyIdForEmployerUser($user);
+        if (!$companyId) {
+            return [false, $this->fail('Employer profile not found', 404)];
+        }
+
+        $job = (new Job())->find($jobId);
+        if (!$job) {
+            return [false, $this->failNotFound('Job not found')];
+        }
+
+        if (($job['companyId'] ?? null) !== $companyId) {
+            return [false, $this->fail('Forbidden: not your company job', 403)];
+        }
+
+        return [true, null];
+    }
+
+    /**
+     * Enforce that an application belongs to employer company via job.companyId (unless admin).
+     */
+    private function authorizeApplicationAccess($applicationId)
+    {
+        $user = $this->getAuthUser();
+        if (!$user)
+            return [false, $this->fail('Unauthorized', 401)];
+
+        if ($this->isAdminRole($user->role ?? '')) {
+            return [true, null];
+        }
+
+        $companyId = $this->getCompanyIdForEmployerUser($user);
+        if (!$companyId) {
+            return [false, $this->fail('Employer profile not found', 404)];
+        }
+
+        $db = \Config\Database::connect();
+
+        // Check application -> job -> company ownership
+        $row = $db->table('applications')
+            ->select('applications.id, jobs.companyId')
+            ->join('jobs', 'jobs.id = applications.jobId', 'inner')
+            ->where('applications.id', $applicationId)
+            ->get()
+            ->getRowArray();
+
+        if (!$row) {
+            return [false, $this->failNotFound('Application not found')];
+        }
+
+        if (($row['companyId'] ?? null) !== $companyId) {
+            return [false, $this->fail('Forbidden: not your company application', 403)];
+        }
+
+        return [true, null];
+    }
+
+    /**
+     * Enforce that candidate profile can be fetched only if candidate has at least one application
+     * for employer's company jobs (unless admin).
+     */
+    private function authorizeCandidateProfileAccess($candidateUserId)
+    {
+        $user = $this->getAuthUser();
+        if (!$user)
+            return [false, $this->fail('Unauthorized', 401)];
+
+        if ($this->isAdminRole($user->role ?? '')) {
+            return [true, null];
+        }
+
+        $companyId = $this->getCompanyIdForEmployerUser($user);
+        if (!$companyId) {
+            return [false, $this->fail('Employer profile not found', 404)];
+        }
+
+        $db = \Config\Database::connect();
+
+        // Candidate must have at least one application on a job belonging to employer company.
+        $row = $db->table('applications')
+            ->select('applications.id')
+            ->join('jobs', 'jobs.id = applications.jobId', 'inner')
+            ->where('applications.candidateId', $candidateUserId)
+            ->where('jobs.companyId', $companyId)
+            ->limit(1)
+            ->get()
+            ->getRowArray();
+
+        if (!$row) {
+            return [false, $this->fail('Forbidden: candidate not related to your company', 403)];
+        }
+
+        return [true, null];
+    }
+
+    /**
      * Get applications for a specific job with stats and pagination
      */
     public function getApplicationsForJob($jobId = null)
     {
         try {
             if ($jobId === null) {
-                $jobId = $this->request->getUri()->getSegment(4);
+                $jobId = $this->request->getUri()->getSegment(4); // /api/applications/job/{jobId}
             }
 
             if (!$jobId) {
                 return $this->fail('Job ID is required', 400);
             }
+
+            // ✅ AUTHZ
+            [$ok, $resp] = $this->authorizeJobAccess($jobId);
+            if (!$ok)
+                return $resp;
 
             // Get pagination parameters
             $page = (int) ($this->request->getGet('page') ?? 1);
@@ -132,6 +290,10 @@ class Applications extends BaseController
     public function filterApplications()
     {
         try {
+            $user = $this->getAuthUser();
+            if (!$user)
+                return $this->fail('Unauthorized', 401);
+
             // Get pagination parameters
             $page = (int) ($this->request->getGet('page') ?? 1);
             $limit = (int) ($this->request->getGet('limit') ?? 20);
@@ -158,15 +320,21 @@ class Applications extends BaseController
                 ->join('jobs', 'jobs.id = applications.jobId', 'left')
                 ->join('companies', 'companies.id = jobs.companyId', 'left');
 
-            if ($status) {
+            // AUTHZ: restrict employer/hr to their company jobs
+            if (!$this->isAdminRole($user->role ?? '')) {
+                $companyId = $this->getCompanyIdForEmployerUser($user);
+                if (!$companyId)
+                    return $this->fail('Employer profile not found', 404);
+                $builder->where('jobs.companyId', $companyId);
+            }
+
+            if ($status)
                 $builder->where('applications.status', $status);
-            }
-            if ($jobId) {
+            if ($jobId)
                 $builder->where('applications.jobId', $jobId);
-            }
-            if ($candidateId) {
+            if ($candidateId)
                 $builder->where('applications.candidateId', $candidateId);
-            }
+
             if ($query) {
                 $builder->groupStart()
                     ->like('users.firstName', $query)
@@ -175,6 +343,7 @@ class Applications extends BaseController
                     ->orLike('jobs.title', $query)
                     ->groupEnd();
             }
+
             if ($minRating) {
                 $builder->where('applications.rating >=', $minRating);
             }
@@ -233,12 +402,17 @@ class Applications extends BaseController
     {
         try {
             if ($id === null) {
-                $id = $this->request->getUri()->getSegment(3);
+                $id = $this->request->getUri()->getSegment(3); // /api/applications/{id}
             }
 
             if (!$id) {
                 return $this->fail('Application ID is required', 400);
             }
+
+            // AUTHZ
+            [$ok, $resp] = $this->authorizeApplicationAccess($id);
+            if (!$ok)
+                return $resp;
 
             $db = \Config\Database::connect();
             $builder = $db->table('applications');
@@ -291,19 +465,24 @@ class Applications extends BaseController
 
     /**
      * Update application status
-     * ✅ NEW: When status becomes REJECTED -> send rejection email (from headhunting@fortunekenya.com)
-     * ✅ KEEP application active for reporting (no isActive changes)
+     * NEW: When status becomes REJECTED -> send rejection email (from headhunting@fortunekenya.com)
+     * KEEP application active for reporting (no isActive changes)
      */
     public function updateApplicationStatus($id = null)
     {
         try {
             if ($id === null) {
-                $id = $this->request->getUri()->getSegment(3);
+                $id = $this->request->getUri()->getSegment(3); // /api/applications/{id}/status
             }
 
             if (!$id) {
                 return $this->fail('Application ID is required', 400);
             }
+
+            // AUTHZ
+            [$ok, $resp] = $this->authorizeApplicationAccess($id);
+            if (!$ok)
+                return $resp;
 
             $data = $this->request->getJSON(true);
 
@@ -422,6 +601,13 @@ class Applications extends BaseController
             $companyModel = new Company();
 
             foreach ($data['applicationIds'] as $appId) {
+                // AUTHZ per application
+                [$ok, $resp] = $this->authorizeApplicationAccess($appId);
+                if (!$ok) {
+                    // skip unauthorized IDs silently
+                    continue;
+                }
+
                 $application = $this->applicationModel->find($appId);
                 if (!$application) {
                     continue;
@@ -447,7 +633,7 @@ class Applications extends BaseController
                     'changedAt' => date('Y-m-d H:i:s')
                 ]);
 
-                // ✅ Send rejection email (only on transition)
+                // Send rejection email (only on transition)
                 if ($data['status'] === 'REJECTED' && $oldStatus !== 'REJECTED') {
                     try {
                         $candidate = $userModel->find($application['candidateId']);
@@ -504,17 +690,26 @@ class Applications extends BaseController
     public function getDashboardStats()
     {
         try {
-            $userId = $this->request->user->id ?? null;
+            $user = $this->getAuthUser();
+            $userId = $user->id ?? null;
 
             if (!$userId) {
                 return $this->fail('Unauthorized', 401);
             }
 
-            // Get user's company
-            $companyModel = new \App\Models\Company();
-            $company = $companyModel->where('ownerId', $userId)->first();
+            $db = \Config\Database::connect();
 
-            if (!$company) {
+            //  use employer_profiles mapping instead of companies.ownerId
+            if ($this->isAdminRole($user->role ?? '')) {
+                // Admin can still see global stats if desired; keep current behavior by using no company filter.
+                // If you prefer admin to still be scoped, remove this block.
+            }
+
+            $employerProfile = $this->getEmployerProfileByUserId($userId);
+            $companyId = $employerProfile['companyId'] ?? null;
+
+            // If admin but no employer profile, return zeros (same as before)
+            if (!$companyId) {
                 return $this->respond([
                     'success' => true,
                     'data' => [
@@ -533,14 +728,13 @@ class Applications extends BaseController
                 ]);
             }
 
-            $db = \Config\Database::connect();
             $builder = $db->table('applications');
 
             // Get all applications for company jobs
             $applications = $builder
                 ->select('applications.*')
                 ->join('jobs', 'jobs.id = applications.jobId')
-                ->where('jobs.companyId', $company['id'])
+                ->where('jobs.companyId', $companyId)
                 ->get()
                 ->getResultArray();
 
@@ -558,7 +752,7 @@ class Applications extends BaseController
                 ->join('candidate_profiles', 'candidate_profiles.userId = users.id', 'left')
                 ->join('jobs', 'jobs.id = applications.jobId', 'left')
                 ->join('companies', 'companies.id = jobs.companyId', 'left')
-                ->where('jobs.companyId', $company['id'])
+                ->where('jobs.companyId', $companyId)
                 ->orderBy('applications.appliedAt', 'DESC')
                 ->limit(10)
                 ->get()
@@ -592,7 +786,18 @@ class Applications extends BaseController
     public function exportApplications()
     {
         try {
+            $user = $this->getAuthUser();
+            if (!$user)
+                return $this->fail('Unauthorized', 401);
+
             $jobId = $this->request->getGet('jobId');
+
+            // if exporting for a specific job, ensure job belongs to employer
+            if ($jobId) {
+                [$ok, $resp] = $this->authorizeJobAccess($jobId);
+                if (!$ok)
+                    return $resp;
+            }
 
             $db = \Config\Database::connect();
             $builder = $db->table('applications');
@@ -606,6 +811,14 @@ class Applications extends BaseController
                 ->join('candidate_profiles', 'candidate_profiles.userId = users.id', 'left')
                 ->join('jobs', 'jobs.id = applications.jobId', 'left')
                 ->join('companies', 'companies.id = jobs.companyId', 'left');
+
+            // if employer/hr and not admin, restrict to their company
+            if (!$this->isAdminRole($user->role ?? '')) {
+                $companyId = $this->getCompanyIdForEmployerUser($user);
+                if (!$companyId)
+                    return $this->fail('Employer profile not found', 404);
+                $builder->where('jobs.companyId', $companyId);
+            }
 
             if ($jobId) {
                 $builder->where('applications.jobId', $jobId);
@@ -654,12 +867,17 @@ class Applications extends BaseController
     {
         try {
             if ($id === null) {
-                $id = $this->request->getUri()->getSegment(3);
+                $id = $this->request->getUri()->getSegment(3); // /api/applications/{id}/notes
             }
 
             if (!$id) {
                 return $this->fail('Application ID is required', 400);
             }
+
+            // AUTHZ
+            [$ok, $resp] = $this->authorizeApplicationAccess($id);
+            if (!$ok)
+                return $resp;
 
             $data = $this->request->getJSON(true);
 
@@ -700,12 +918,17 @@ class Applications extends BaseController
     {
         try {
             if ($candidateId === null) {
-                $candidateId = $this->request->getUri()->getSegment(4);
+                $candidateId = $this->request->getUri()->getSegment(4); // /api/applications/candidate/{candidateId}/profile
             }
 
             if (!$candidateId) {
                 return $this->fail('Candidate ID is required', 400);
             }
+
+            // AUTHZ: prevent employers fetching random candidates
+            [$ok, $resp] = $this->authorizeCandidateProfileAccess($candidateId);
+            if (!$ok)
+                return $resp;
 
             $candidate = $this->candidateModel->find($candidateId);
             if (!$candidate) {
