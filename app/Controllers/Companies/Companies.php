@@ -72,7 +72,7 @@ class Companies extends BaseController
                 return $this->failNotFound('User not found');
             }
 
-            // Generate unique slug 
+            // Generate unique slug
             $baseSlug = strtolower(preg_replace('/[^a-z0-9]+/', '-', $data['name']));
             $baseSlug = preg_replace('/^-|-$/', '', $baseSlug);
             $slug = $baseSlug . '-' . time();
@@ -82,11 +82,13 @@ class Companies extends BaseController
                 $data['socialLinks'] = json_encode($data['socialLinks']);
             }
 
-            // Use transaction to ensure both operations succeed or fail together 
+            // Use transaction to ensure both operations succeed or fail together
             $db = \Config\Database::connect();
             $db->transStart();
 
             try {
+                $now = date('Y-m-d H:i:s');
+
                 // Create company
                 $companyData = [
                     'id' => uniqid('company_'),
@@ -104,7 +106,9 @@ class Companies extends BaseController
                     'socialLinks' => $data['socialLinks'] ?? null,
                     'status' => 'VERIFIED',
                     'verified' => true,
-                    'verifiedAt' => date('Y-m-d H:i:s')
+                    'verifiedAt' => $now,
+                    'createdAt' => $now,
+                    'updatedAt' => $now,
                 ];
                 $companyModel->insert($companyData);
 
@@ -126,7 +130,7 @@ class Companies extends BaseController
                     throw new \Exception('Transaction failed');
                 }
 
-                // Get created company and employer profile 
+                // Get created company and employer profile
                 $createdCompany = $companyModel->find($companyData['id']);
                 $createdEmployer = $employerModel->find($employerData['id']);
 
@@ -187,7 +191,7 @@ class Companies extends BaseController
                 return $this->failNotFound('Company not found');
             }
 
-            // Get job counts and employer profile counts 
+            // Get job counts and employer profile counts
             $jobModel = new \App\Models\Job();
             $jobCount = $jobModel->where('companyId', $company['id'])->countAllResults(false);
 
@@ -265,15 +269,17 @@ class Companies extends BaseController
                     } else {
                         $updateData[$key] = $value;
                     }
-                } elseif ($value !== null) {  // Changed from 'undefined' to 'null'
+                } elseif ($value !== null) {
                     $updateData[$key] = $value;
                 }
             }
 
+            $updateData['updatedAt'] = date('Y-m-d H:i:s');
+
             $companyModel = new Company();
             $companyModel->update($employer['companyId'], $updateData);
 
-            // Get updated company 
+            // Get updated company
             $updatedCompany = $companyModel->find($employer['companyId']);
 
             return $this->respond([
@@ -315,7 +321,6 @@ class Companies extends BaseController
             }
 
             $jobModel = new \App\Models\Job();
-            $applicationModel = new \App\Models\Application();
 
             // Get stats matching Node.js structure
             $activeJobs = $jobModel->where('companyId', $employer['companyId'])
@@ -325,14 +330,14 @@ class Companies extends BaseController
             $totalJobs = $jobModel->where('companyId', $employer['companyId'])
                 ->countAllResults(false);
 
-            // Get total applications (matching Node.js - using subquery to avoid join issues)
+            // Get total applications
             $db = \Config\Database::connect();
             $totalApplications = $db->table('applications')
                 ->join('jobs', 'jobs.id = applications.jobId', 'inner')
                 ->where('jobs.companyId', $employer['companyId'])
                 ->countAllResults(false);
 
-            // Get recent applications (last 10) - matching Node.js structure
+            // Get recent applications (last 10)
             $recentApplicationsRaw = $db->table('applications')
                 ->select('applications.id, applications.status, applications.appliedAt, 
                          users.firstName, users.lastName, users.email, users.avatar,
@@ -345,7 +350,7 @@ class Companies extends BaseController
                 ->get()
                 ->getResultArray();
 
-            // Format recent applications to match Node.js structure
+            // Format recent applications
             $recentFormatted = [];
             foreach ($recentApplicationsRaw as $app) {
                 $recentFormatted[] = [
@@ -421,7 +426,7 @@ class Companies extends BaseController
 
             $companies = $companyModel->orderBy('createdAt', 'DESC')->findAll();
 
-            // Format companies to include employer profiles and counts 
+            // Format companies to include employer profiles and counts
             $employerModel = new EmployerProfile();
             $jobModel = new \App\Models\Job();
             $userModel = new \App\Models\User();
@@ -501,7 +506,8 @@ class Companies extends BaseController
     public function verifyCompany($id = null)
     {
         if ($id === null) {
-            $id = $this->request->getUri()->getSegment(3);
+            // /api/companies/admin/{id}/verify => id is segment 4
+            $id = $this->request->getUri()->getSegment(4);
         }
 
         if (!$id) {
@@ -514,7 +520,8 @@ class Companies extends BaseController
         $updateData = [
             'status' => $data['status'],
             'verified' => $data['status'] === 'VERIFIED',
-            'verifiedAt' => $data['status'] === 'VERIFIED' ? date('Y-m-d H:i:s') : null
+            'verifiedAt' => $data['status'] === 'VERIFIED' ? date('Y-m-d H:i:s') : null,
+            'updatedAt' => date('Y-m-d H:i:s'),
         ];
 
         $companyModel->update($id, $updateData);
@@ -544,24 +551,99 @@ class Companies extends BaseController
     public function suspendCompany($id = null)
     {
         if ($id === null) {
-            $id = $this->request->getUri()->getSegment(3);
+            // /api/companies/admin/{id}/suspend => id is segment 4
+            $id = $this->request->getUri()->getSegment(4);
         }
 
         if (!$id) {
             return $this->fail('Company ID is required', 400);
         }
 
-        $data = $this->request->getJSON(true);
         $companyModel = new Company();
 
         $companyModel->update($id, [
-            'status' => 'SUSPENDED'
+            'status' => 'SUSPENDED',
+            'verified' => false,
+            'verifiedAt' => null,
+            'updatedAt' => date('Y-m-d H:i:s'),
         ]);
 
         return $this->respond([
             'success' => true,
             'message' => 'Company suspended'
         ]);
+    }
+
+    /**
+     * @OA\Patch(
+     *     path="/api/companies/admin/{id}/status",
+     *     tags={"Companies"},
+     *     summary="Update company status (admin only)",
+     *     security={{"bearerAuth":{}}},
+     *     @OA\Parameter(name="id", in="path", required=true, @OA\Schema(type="string")),
+     *     @OA\RequestBody(
+     *         required=true,
+     *         @OA\JsonContent(
+     *             required={"status"},
+     *             @OA\Property(property="status", type="string", enum={"PENDING", "VERIFIED", "SUSPENDED", "REJECTED"}, example="VERIFIED")
+     *         )
+     *     ),
+     *     @OA\Response(response="200", description="Company status updated")
+     * )
+     */
+    public function updateCompanyStatus($id = null)
+    {
+        if ($id === null) {
+            // /api/companies/admin/{id}/status => id is segment 4
+            $id = $this->request->getUri()->getSegment(4);
+        }
+
+        if (!$id) {
+            return $this->fail('Company ID is required', 400);
+        }
+
+        try {
+            $data = $this->request->getJSON(true);
+            $status = $data['status'] ?? null;
+
+            $allowed = ['PENDING', 'VERIFIED', 'SUSPENDED', 'REJECTED'];
+            if (!$status || !in_array($status, $allowed, true)) {
+                return $this->fail('Invalid status value', 400);
+            }
+
+            $companyModel = new Company();
+            $company = $companyModel->find($id);
+            if (!$company) {
+                return $this->failNotFound('Company not found');
+            }
+
+            $updateData = [
+                'status' => $status,
+                'updatedAt' => date('Y-m-d H:i:s'),
+            ];
+
+            if ($status === 'VERIFIED') {
+                $updateData['verified'] = true;
+                $updateData['verifiedAt'] = date('Y-m-d H:i:s');
+            } else {
+                $updateData['verified'] = false;
+                $updateData['verifiedAt'] = null;
+            }
+
+            $companyModel->update($id, $updateData);
+
+            return $this->respond([
+                'success' => true,
+                'message' => 'Company status updated',
+                'data' => $companyModel->find($id)
+            ]);
+        } catch (\Exception $e) {
+            return $this->respond([
+                'success' => false,
+                'message' => 'Failed to update company status',
+                'data' => []
+            ], 500);
+        }
     }
 
     /**
@@ -595,7 +677,8 @@ class Companies extends BaseController
     public function forceUpdateCompany($id = null)
     {
         if ($id === null) {
-            $id = $this->request->getUri()->getSegment(3);
+            // /api/companies/admin/{id} => id is segment 4
+            $id = $this->request->getUri()->getSegment(4);
         }
 
         if (!$id) {
@@ -608,6 +691,8 @@ class Companies extends BaseController
         if (isset($data['socialLinks']) && (is_array($data['socialLinks']) || is_object($data['socialLinks']))) {
             $data['socialLinks'] = json_encode($data['socialLinks']);
         }
+
+        $data['updatedAt'] = date('Y-m-d H:i:s');
 
         $companyModel = new Company();
         $companyModel->update($id, $data);
@@ -631,7 +716,8 @@ class Companies extends BaseController
     public function getCompanyById($id = null)
     {
         if ($id === null) {
-            $id = $this->request->getUri()->getSegment(3);
+            // /api/companies/admin/{id} => id is segment 4
+            $id = $this->request->getUri()->getSegment(4);
         }
 
         if (!$id) {
