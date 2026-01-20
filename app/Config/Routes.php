@@ -138,15 +138,15 @@ $routes->group('api/candidate', ['namespace' => 'App\Controllers\Candidate', 'fi
 
 // Applications Routes
 $routes->group('api/applications', ['namespace' => 'App\Controllers\Applications', 'filter' => 'auth'], function ($routes) {
-    $routes->get('job/(:segment)', 'Applications::getApplicationsForJob');
+    $routes->get('job/(:segment)', 'Applications::getApplicationsForJob/$1');
     $routes->get('filter', 'Applications::filterApplications');
     $routes->get('stats/dashboard', 'Applications::getDashboardStats');
     $routes->get('export/csv', 'Applications::exportApplications');
     $routes->get('my-applications', 'Applications::getMyApplications');
-    $routes->get('candidate/(:segment)/profile', 'Applications::getCandidateProfile');
-    $routes->get('(:segment)', 'Applications::getApplicationDetails');
-    $routes->put('(:segment)/status', 'Applications::updateApplicationStatus');
-    $routes->post('(:segment)/notes', 'Applications::addInternalNote');
+    $routes->get('candidate/(:segment)/profile', 'Applications::getCandidateProfile/$1');
+    $routes->get('(:segment)', 'Applications::getApplicationDetails/$1');
+    $routes->put('(:segment)/status', 'Applications::updateApplicationStatus/$1');
+    $routes->post('(:segment)/notes', 'Applications::addInternalNote/$1');
     $routes->post('bulk-update', 'Applications::bulkUpdateStatus');
 });
 
@@ -158,6 +158,7 @@ $routes->group('api/companies', ['namespace' => 'App\Controllers\Companies'], fu
     $routes->get('me/stats', 'Companies::getMyCompanyStats', ['filter' => 'auth']);
     $routes->get('admin/all', 'Companies::getAllCompaniesAdmin', ['filter' => 'auth']);
     $routes->get('admin/pending', 'Companies::getPendingCompanies', ['filter' => 'auth']);
+    $routes->patch('admin/(:segment)/status', 'Companies::updateCompanyStatus/$1', ['filter' => 'auth']);
     $routes->get('admin/(:segment)', 'Companies::getCompanyById/$1', ['filter' => 'auth']);
     $routes->put('admin/(:segment)', 'Companies::forceUpdateCompany/$1', ['filter' => 'auth']);
     $routes->patch('admin/(:segment)', 'Companies::forceUpdateCompany/$1', ['filter' => 'auth']);
