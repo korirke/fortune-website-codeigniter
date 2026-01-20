@@ -13,7 +13,7 @@ use App\Traits\NormalizedResponseTrait;
  *     description="FAQ admin management endpoints"
  * )
  */
-class Faq extends BaseController
+class FaqController extends BaseController
 {
     use NormalizedResponseTrait;
 
