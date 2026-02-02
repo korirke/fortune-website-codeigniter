@@ -153,6 +153,8 @@ class Admin extends BaseController
                     if ($existing) {
                         $navModel->update($existing['id'], $navItemData);
                     } else {
+                        // Generate ID for new nav item
+                        $navItemData['id'] = uniqid('nav_');
                         $navModel->insert($navItemData);
                     }
                 }
@@ -176,17 +178,21 @@ class Admin extends BaseController
                             // Delete old dropdown items
                             $dropdownItemModel->where('dropdownDataId', $dropdownId)->delete();
                         } else {
-                            // Create new dropdown
-                            $dropdownId = $dropdownDataModel->insert([
+                            // Create new dropdown with generated ID
+                            $newDropdownId = uniqid('dropdown_');
+                            $dropdownDataModel->insert([
+                                'id' => $newDropdownId,
                                 'navItemId' => $navItem['id'],
                                 'title' => $dropdownInfo['title'] ?? 'Dropdown Title'
                             ]);
+                            $dropdownId = $newDropdownId;
                         }
 
                         // Create dropdown items
                         if (isset($dropdownInfo['items']) && is_array($dropdownInfo['items'])) {
                             foreach ($dropdownInfo['items'] as $index => $item) {
                                 $dropdownItemModel->insert([
+                                    'id' => uniqid('dditem_'),
                                     'name' => $item['name'],
                                     'href' => $item['href'],
                                     'description' => $item['description'] ?? '',
@@ -319,6 +325,7 @@ class Admin extends BaseController
             if (isset($data['dashboards']) && is_array($data['dashboards'])) {
                 foreach ($data['dashboards'] as $index => $dashboard) {
                     $dashboardData = [
+                        'id' => uniqid('herodash_'),
                         'title' => $dashboard['title'],
                         'description' => $dashboard['description'] ?? null,
                         'type' => $dashboard['type'],
@@ -499,10 +506,14 @@ class Admin extends BaseController
                             $clientModel->update($client['id'], $clientData);
                             $updatedCount++;
                         } else {
+                            // ID doesn't exist in DB, create new with generated ID
+                            $clientData['id'] = uniqid('client_');
                             $clientModel->insert($clientData);
                             $createdCount++;
                         }
                     } else {
+                        // New client (temp ID or no ID), generate new ID
+                        $clientData['id'] = uniqid('client_');
                         $clientModel->insert($clientData);
                         $createdCount++;
                     }
@@ -653,6 +664,9 @@ class Admin extends BaseController
 
         try {
             $data = $this->request->getJSON(true);
+            if (!is_array($data)) {
+                return $this->fail('Invalid request body', 400);
+            }
 
             $db->transStart();
 
@@ -664,7 +678,12 @@ class Admin extends BaseController
             // Insert new services
             if (isset($data['services']) && is_array($data['services'])) {
                 foreach ($data['services'] as $service) {
+                    $id = isset($service['id']) && $service['id'] && !str_starts_with((string) $service['id'], 'temp-')
+                        ? (string) $service['id']
+                        : 'service_' . uniqid();
+
                     $serviceData = [
+                        'id' => $id,
                         'title' => $service['title'],
                         'slug' => $service['slug'],
                         'description' => $service['description'],
@@ -719,7 +738,7 @@ class Admin extends BaseController
             ]);
         } catch (\Exception $e) {
             $db->transRollback();
-            log_message('error', 'Services update failed: ' . $e->getMessage());
+            log_message('error', 'Services update failed: ' . $e->getMessage() . "\n" . $e->getTraceAsString());
             return $this->fail('Failed to update services', 500);
         }
     }
@@ -914,6 +933,9 @@ class Admin extends BaseController
 
         try {
             $data = $this->request->getJSON(true);
+            if (!is_array($data)) {
+                return $this->fail('Invalid request body', 400);
+            }
 
             $db->transStart();
 
@@ -925,7 +947,12 @@ class Admin extends BaseController
             // Insert new stats
             if (isset($data['stats']) && is_array($data['stats'])) {
                 foreach ($data['stats'] as $stat) {
+                    $id = isset($stat['id']) && $stat['id'] && !str_starts_with((string) $stat['id'], 'temp-')
+                        ? (string) $stat['id']
+                        : 'stat_' . uniqid();
+
                     $statData = [
+                        'id' => $id,
                         'number' => $stat['number'],
                         'label' => $stat['label'],
                         'icon' => $stat['icon'],
@@ -950,7 +977,7 @@ class Admin extends BaseController
             ]);
         } catch (\Exception $e) {
             $db->transRollback();
-            log_message('error', 'Stats update failed: ' . $e->getMessage());
+            log_message('error', 'Stats update failed: ' . $e->getMessage() . "\n" . $e->getTraceAsString());
             return $this->fail('Failed to update stats', 500);
         }
     }
@@ -1008,31 +1035,44 @@ class Admin extends BaseController
 
         try {
             $data = $this->request->getJSON(true);
+            if (!is_array($data)) {
+                return $this->fail('Invalid request body', 400);
+            }
 
             $db->transStart();
 
             $footerSectionModel = new FooterSection();
             $footerLinkModel = new FooterLink();
 
-            // Delete existing footer data
+            // Delete existing footer data (links first due to FK)
             $footerLinkModel->where('1=1')->delete();
             $footerSectionModel->where('1=1')->delete();
 
             // Create new footer sections and links
             if (isset($data['sections']) && is_array($data['sections'])) {
                 foreach ($data['sections'] as $section) {
+                    $sectionId = isset($section['id']) && $section['id'] && !str_starts_with((string) $section['id'], 'temp-')
+                        ? (string) $section['id']
+                        : 'footer_section_' . uniqid();
+
                     $sectionData = [
+                        'id' => $sectionId,
                         'title' => $section['title'],
                         'position' => $section['position'],
                         'isActive' => isset($section['isActive']) ? $section['isActive'] : true
                     ];
 
-                    $sectionId = $footerSectionModel->insert($sectionData);
+                    $footerSectionModel->insert($sectionData);
 
                     // Create links for this section
                     if (isset($section['links']) && is_array($section['links'])) {
                         foreach ($section['links'] as $link) {
+                            $linkId = isset($link['id']) && $link['id'] && !str_starts_with((string) $link['id'], 'temp-')
+                                ? (string) $link['id']
+                                : 'footer_link_' . uniqid();
+
                             $footerLinkModel->insert([
+                                'id' => $linkId,
                                 'footerSectionId' => $sectionId,
                                 'name' => $link['name'],
                                 'href' => $link['href'],
@@ -1056,7 +1096,7 @@ class Admin extends BaseController
             ]);
         } catch (\Exception $e) {
             $db->transRollback();
-            log_message('error', 'Footer update failed: ' . $e->getMessage());
+            log_message('error', 'Footer update failed: ' . $e->getMessage() . "\n" . $e->getTraceAsString());
             return $this->fail('Failed to update footer', 500);
         }
     }
@@ -1110,6 +1150,9 @@ class Admin extends BaseController
 
         try {
             $data = $this->request->getJSON(true);
+            if (!is_array($data)) {
+                return $this->fail('Invalid request body', 400);
+            }
 
             $db->transStart();
 
@@ -1121,7 +1164,12 @@ class Admin extends BaseController
             // Insert new contact info
             if (isset($data['contactInfo']) && is_array($data['contactInfo'])) {
                 foreach ($data['contactInfo'] as $info) {
+                    $id = isset($info['id']) && $info['id'] && !str_starts_with((string) $info['id'], 'temp-')
+                        ? (string) $info['id']
+                        : 'contact_' . uniqid();
+
                     $contactModel->insert([
+                        'id' => $id,
                         'type' => $info['type'],
                         'label' => $info['label'],
                         'value' => $info['value'],
@@ -1144,7 +1192,7 @@ class Admin extends BaseController
             ]);
         } catch (\Exception $e) {
             $db->transRollback();
-            log_message('error', 'Contact info update failed: ' . $e->getMessage());
+            log_message('error', 'Contact info update failed: ' . $e->getMessage() . "\n" . $e->getTraceAsString());
             return $this->fail('Failed to update contact info', 500);
         }
     }
@@ -1188,6 +1236,9 @@ class Admin extends BaseController
 
         try {
             $data = $this->request->getJSON(true);
+            if (!is_array($data)) {
+                return $this->fail('Invalid request body', 400);
+            }
 
             $db->transStart();
 
@@ -1199,7 +1250,12 @@ class Admin extends BaseController
             // Insert new social links
             if (isset($data['socialLinks']) && is_array($data['socialLinks'])) {
                 foreach ($data['socialLinks'] as $link) {
+                    $id = isset($link['id']) && $link['id'] && !str_starts_with((string) $link['id'], 'temp-')
+                        ? (string) $link['id']
+                        : 'social_' . uniqid();
+
                     $socialModel->insert([
+                        'id' => $id,
                         'name' => $link['name'],
                         'icon' => $link['icon'],
                         'href' => $link['href'],
@@ -1221,7 +1277,7 @@ class Admin extends BaseController
             ]);
         } catch (\Exception $e) {
             $db->transRollback();
-            log_message('error', 'Social links update failed: ' . $e->getMessage());
+            log_message('error', 'Social links update failed: ' . $e->getMessage() . "\n" . $e->getTraceAsString());
             return $this->fail('Failed to update social links', 500);
         }
     }
@@ -1421,6 +1477,7 @@ class Admin extends BaseController
             if (isset($data['ctas']) && is_array($data['ctas'])) {
                 foreach ($data['ctas'] as $cta) {
                     $ctaModel->insert([
+                        'id' => uniqid('cta_'),
                         'pageKey' => $cta['pageKey'],
                         'title' => $cta['title'],
                         'description' => $cta['description'] ?? null,
