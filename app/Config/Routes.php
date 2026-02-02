@@ -171,9 +171,9 @@ $routes->group('api/contact', ['namespace' => 'App\Controllers\Contact'], functi
     $routes->post('submit', 'Contact::submitContact');
     $routes->get('', 'Contact::getAllInquiries', ['filter' => 'auth']);
     $routes->get('stats', 'Contact::getStats', ['filter' => 'auth']);
-    $routes->get('(:segment)', 'Contact::getInquiryById', ['filter' => 'auth']);
-    $routes->put('(:segment)', 'Contact::updateInquiry', ['filter' => 'auth']);
-    $routes->delete('(:segment)', 'Contact::deleteInquiry', ['filter' => 'auth']);
+    $routes->get('(:segment)', 'Contact::getInquiryById/$1', ['filter' => 'auth']);
+    $routes->put('(:segment)', 'Contact::updateInquiry/$1', ['filter' => 'auth']);
+    $routes->delete('(:segment)', 'Contact::deleteInquiry/$1', ['filter' => 'auth']);
 });
 
 // FAQ Admin Routes 
@@ -216,7 +216,6 @@ $routes->group('api/admin', ['namespace' => 'App\Controllers\Admin', 'filter' =>
     $routes->delete('services/(:segment)', 'Admin::deleteService');
     $routes->put('testimonials', 'Admin::updateTestimonials');
     $routes->delete('testimonials/(:segment)', 'Admin::deleteTestimonial/$1', ['filter' => 'auth']);
-    // $routes->delete('testimonials/(:segment)', 'Admin::deleteTestimonial');
     $routes->put('stats', 'Admin::updateStats');
     $routes->delete('stats/(:segment)', 'Admin::deleteStat');
     $routes->put('footer', 'Admin::updateFooter');
@@ -226,6 +225,7 @@ $routes->group('api/admin', ['namespace' => 'App\Controllers\Admin', 'filter' =>
     $routes->put('social-links', 'Admin::updateSocialLinks');
     $routes->get('social-links', 'Admin::getSocialLinks');
     $routes->put('page-content', 'Admin::updatePageContent');
+    $routes->post('page-content/batch', 'Admin::getPageContentsBatch');
     $routes->get('page-content/(:segment)', 'Admin::getPageContent');
     $routes->put('call-to-actions', 'Admin::updateCallToActions');
     $routes->get('call-to-actions/(:segment)', 'Admin::getCallToActions');
