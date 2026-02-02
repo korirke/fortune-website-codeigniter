@@ -3,7 +3,7 @@
 namespace App\Controllers\Faq;
 
 use App\Controllers\BaseController;
-use App\Models\Faq;
+use App\Models\Faq as FaqModel;
 use App\Models\FaqCategory;
 use App\Traits\NormalizedResponseTrait;
 
@@ -13,7 +13,7 @@ use App\Traits\NormalizedResponseTrait;
  *     description="FAQ admin management endpoints"
  * )
  */
-class FaqController extends BaseController
+class Faq extends BaseController
 {
     use NormalizedResponseTrait;
 
@@ -45,10 +45,10 @@ class FaqController extends BaseController
     {
         try {
             $data = $this->request->getJSON(true);
-            $faqModel = new Faq();
+            $faqModel = new FaqModel();
             $categoryModel = new FaqCategory();
             
-            // Validate category exists (matching Node.js)
+            // Validate category exists
             $category = $categoryModel->where('key', $data['category'])->first();
             if (!$category) {
                 return $this->fail('Category not found', 400);
@@ -66,7 +66,7 @@ class FaqController extends BaseController
             
             $faqModel->insert($faqData);
             
-            // Get created FAQ with category (matching Node.js)
+            // Get created FAQ with category
             $createdFaq = $faqModel->find($faqData['id']);
             $createdFaq['category'] = $category;
 
@@ -112,7 +112,7 @@ class FaqController extends BaseController
     {
         try {
             $data = $this->request->getJSON(true);
-            $faqModel = new Faq();
+            $faqModel = new FaqModel();
             $categoryModel = new FaqCategory();
             
             $faq = $faqModel->find($id);
@@ -129,7 +129,7 @@ class FaqController extends BaseController
                 $updateData['tags'] = is_array($data['tags']) ? json_encode($data['tags']) : json_encode([]);
             }
             
-            // Handle category update (matching Node.js)
+            // Handle category update 
             if (isset($data['category'])) {
                 $category = $categoryModel->where('key', $data['category'])->first();
                 if (!$category) {
@@ -140,7 +140,7 @@ class FaqController extends BaseController
             
             $faqModel->update($id, $updateData);
             
-            // Get updated FAQ with category (matching Node.js)
+            // Get updated FAQ with category 
             $updatedFaq = $faqModel->find($id);
             $category = $categoryModel->find($updatedFaq['categoryId']);
             $updatedFaq['category'] = $category;
@@ -174,7 +174,7 @@ class FaqController extends BaseController
      */
     public function deleteFaq($id)
     {
-        $faqModel = new Faq();
+        $faqModel = new FaqModel();
         $faqModel->delete($id);
 
         return $this->respond([
@@ -208,7 +208,7 @@ class FaqController extends BaseController
     public function reorderFaqs()
     {
         $data = $this->request->getJSON(true);
-        $faqModel = new Faq();
+        $faqModel = new FaqModel();
         
         foreach ($data as $item) {
             $faqModel->update($item['id'], ['position' => $item['position']]);
@@ -251,8 +251,8 @@ class FaqController extends BaseController
             $categoryModel->insert($categoryData);
             $createdCategory = $categoryModel->find($categoryData['id']);
             
-            // Add _count for faqs (matching Node.js)
-            $faqModel = new \App\Models\Faq();
+            // Add _count for faqs 
+            $faqModel = new FaqModel();
             $faqCount = $faqModel->where('categoryId', $createdCategory['id'])
                 ->where('isActive', true)
                 ->countAllResults(false);
@@ -308,8 +308,8 @@ class FaqController extends BaseController
             $categoryModel->update($id, $data);
             $updatedCategory = $categoryModel->find($id);
             
-            // Add _count for faqs (matching Node.js)
-            $faqModel = new \App\Models\Faq();
+            // Add _count for faqs 
+            $faqModel = new FaqModel();
             $faqCount = $faqModel->where('categoryId', $updatedCategory['id'])
                 ->where('isActive', true)
                 ->countAllResults(false);
