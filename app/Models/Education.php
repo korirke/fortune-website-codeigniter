@@ -12,10 +12,12 @@ class Education extends Model
     protected $returnType       = 'array';
     protected $useSoftDeletes   = false;
     protected $protectFields    = true;
+
     protected $allowedFields    = [
         'id',
         'candidateId',
         'degree',
+        'degreeLevel',
         'fieldOfStudy',
         'institution',
         'location',
