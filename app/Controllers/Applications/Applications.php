@@ -10,6 +10,12 @@ use App\Models\User;
 use App\Models\Job;
 use App\Models\Company;
 use App\Libraries\EmailHelper;
+use App\Services\LonglistExportService;
+use PhpOffice\PhpSpreadsheet\Spreadsheet;
+use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
+use PhpOffice\PhpSpreadsheet\Style\Fill;
+use PhpOffice\PhpSpreadsheet\Style\Alignment;
+use PhpOffice\PhpSpreadsheet\Style\Border;
 use App\Traits\NormalizedResponseTrait;
 
 /**
@@ -417,13 +423,12 @@ class Applications extends BaseController
             $db = \Config\Database::connect();
             $builder = $db->table('applications');
 
-            // Get application with relationships
             $application = $builder
                 ->select('applications.*, 
-                    users.id as candidate_id, users.firstName, users.lastName, users.email, users.phone, users.avatar,
-                    candidate_profiles.id as profile_id, candidate_profiles.title, candidate_profiles.location, candidate_profiles.experienceYears, candidate_profiles.resumeUrl,
-                    jobs.id as job_id, jobs.title as job_title,
-                    companies.id as company_id, companies.name as company_name, companies.logo as company_logo')
+                users.id as candidate_id, users.firstName, users.lastName, users.email, users.phone, users.avatar,
+                candidate_profiles.id as profile_id, candidate_profiles.title, candidate_profiles.location, candidate_profiles.experienceYears, candidate_profiles.resumeUrl,
+                jobs.id as job_id, jobs.title as job_title,
+                companies.id as company_id, companies.name as company_name, companies.logo as company_logo')
                 ->join('users', 'users.id = applications.candidateId', 'left')
                 ->join('candidate_profiles', 'candidate_profiles.userId = users.id', 'left')
                 ->join('jobs', 'jobs.id = applications.jobId', 'left')
@@ -436,25 +441,52 @@ class Applications extends BaseController
                 return $this->failNotFound('Application not found');
             }
 
-            // Format application data
-            $formattedApplication = $this->formatApplicationData($application);
+            $formatted = $this->formatApplicationData($application);
 
-            // Get complete candidate profile
-            $formattedApplication['candidate']['candidateProfile']['domains'] = $this->getCandidateDomains($formattedApplication['candidate']['id']);
-            $formattedApplication['candidate']['candidateProfile']['skills'] = $this->getCandidateSkills($formattedApplication['candidate']['id']);
-            $formattedApplication['candidate']['candidateProfile']['educations'] = $this->getCandidateEducation($formattedApplication['candidate']['id']);
-            $formattedApplication['candidate']['candidateProfile']['experiences'] = $this->getCandidateExperience($formattedApplication['candidate']['id']);
+            $candidateUserId = $formatted['candidate']['id']; // users.id
+            $profileId = $this->getCandidateProfileIdByUserId($candidateUserId); // candidate_profiles.id
 
-            // Get status history
-            $formattedApplication['statusHistory'] = $this->getStatusHistory($id);
+            // Always return these keys (consistent API)
+            $formatted['candidate']['candidateProfile']['personalInfo'] = null;
+            $formatted['candidate']['candidateProfile']['publications'] = [];
+            $formatted['candidate']['candidateProfile']['memberships'] = [];
+            $formatted['candidate']['candidateProfile']['clearances'] = [];
+            $formatted['candidate']['candidateProfile']['courses'] = [];
+            $formatted['candidate']['candidateProfile']['referees'] = [];
+            $formatted['candidate']['candidateProfile']['files'] = [];
+            $formatted['candidate']['candidateProfile']['certifications'] = [];
+            $formatted['candidate']['candidateProfile']['languages'] = [];
+
+            // Existing blocks you already had
+            $formatted['candidate']['candidateProfile']['domains'] = $this->getCandidateDomains($candidateUserId);
+            $formatted['candidate']['candidateProfile']['skills'] = $this->getCandidateSkills($candidateUserId);
+            $formatted['candidate']['candidateProfile']['educations'] = $this->getCandidateEducation($candidateUserId);
+            $formatted['candidate']['candidateProfile']['experiences'] = $this->getCandidateExperience($candidateUserId);
+
+            // Full extras (only if profile exists)
+            if ($profileId) {
+                $formatted['candidate']['candidateProfile']['personalInfo'] = $this->getCandidatePersonalInfoByProfileId($profileId);
+                $formatted['candidate']['candidateProfile']['publications'] = $this->getCandidatePublicationsByProfileId($profileId);
+                $formatted['candidate']['candidateProfile']['memberships'] = $this->getCandidateMembershipsByProfileId($profileId);
+                $formatted['candidate']['candidateProfile']['clearances'] = $this->getCandidateClearancesByProfileId($profileId);
+                $formatted['candidate']['candidateProfile']['courses'] = $this->getCandidateCoursesByProfileId($profileId);
+                $formatted['candidate']['candidateProfile']['referees'] = $this->getCandidateRefereesByProfileId($profileId);
+                $formatted['candidate']['candidateProfile']['files'] = $this->getCandidateFilesByProfileId($profileId);
+                $formatted['candidate']['candidateProfile']['certifications'] = $this->getCandidateCertificationsByProfileId($profileId);
+                $formatted['candidate']['candidateProfile']['languages'] = $this->getCandidateLanguagesByProfileId($profileId);
+            }
+
+            $formatted['statusHistory'] = $this->getStatusHistory($id);
 
             return $this->respond([
                 'success' => true,
                 'message' => 'Application retrieved successfully',
-                'data' => $formattedApplication
+                'data' => $formatted
             ]);
         } catch (\Exception $e) {
             log_message('error', 'Failed to get application details: ' . $e->getMessage());
+            log_message('error', 'Stack trace: ' . $e->getTraceAsString());
+
             return $this->respond([
                 'success' => false,
                 'message' => 'Failed to retrieve application',
@@ -859,7 +891,437 @@ class Applications extends BaseController
             ], 500);
         }
     }
+    public function exportApplicationsCsv()
+    {
+        try {
+            $user = $this->getAuthUser();
+            if (!$user)
+                return $this->fail('Unauthorized', 401);
 
+            $jobId = $this->request->getGet('jobId');
+
+            //     if (!$jobId) {
+            //     return $this->fail('Job ID is required for export', 400);
+            // }
+
+            // AUTHZ: if jobId present, ensure job belongs to employer (or admin)
+            if ($jobId) {
+                [$ok, $resp] = $this->authorizeJobAccess($jobId);
+                if (!$ok)
+                    return $resp;
+            }
+
+            $companyId = null;
+            if (!$this->isAdminRole($user->role ?? '')) {
+                $companyId = $this->getCompanyIdForEmployerUser($user);
+                if (!$companyId)
+                    return $this->fail('Employer profile not found', 404);
+            }
+
+            $service = new LonglistExportService();
+            $rows = $service->buildLonglistRows($jobId, $companyId);
+
+            // Build CSV safely
+            $filename = 'longlist_' . date('Y-m-d_His') . '.csv';
+            $fh = fopen('php://temp', 'w+');
+
+            if (empty($rows)) {
+                fputcsv($fh, ['No data']);
+            } else {
+                fputcsv($fh, array_keys($rows[0]));
+                foreach ($rows as $r) {
+                    fputcsv($fh, array_values($r));
+                }
+            }
+
+            rewind($fh);
+            $csv = stream_get_contents($fh);
+            fclose($fh);
+
+            return $this->response
+                ->setHeader('Content-Type', 'text/csv; charset=utf-8')
+                ->setHeader('Content-Disposition', 'attachment; filename="' . $filename . '"')
+                ->setBody($csv);
+
+        } catch (\Exception $e) {
+            log_message('error', 'exportApplicationsCsv error: ' . $e->getMessage());
+            return $this->respond([
+                'success' => false,
+                'message' => 'Failed to export CSV',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Export applications to XLSX with detailed information and formatting
+     */
+    /**
+     * Export applications to XLSX matching the uploaded template structure
+     */
+    public function exportApplicationsXlsx()
+    {
+        try {
+            $user = $this->getAuthUser();
+            if (!$user)
+                return $this->fail('Unauthorized', 401);
+
+            $jobId = $this->request->getGet('jobId');
+
+            // AUTHZ
+            if ($jobId) {
+                [$ok, $resp] = $this->authorizeJobAccess($jobId);
+                if (!$ok)
+                    return $resp;
+            }
+
+            $companyId = null;
+            if (!$this->isAdminRole($user->role ?? '')) {
+                $companyId = $this->getCompanyIdForEmployerUser($user);
+                if (!$companyId)
+                    return $this->fail('Employer profile not found', 404);
+            }
+
+            $service = new LonglistExportService();
+            $dataRows = $service->buildLonglistRows($jobId, $companyId);
+            $title = $service->getExportTitle($jobId, $companyId);
+
+            $spreadsheet = new Spreadsheet();
+            $sheet = $spreadsheet->getActiveSheet();
+            $sheet->setTitle('Longlist');
+
+            if (empty($dataRows)) {
+                $sheet->setCellValue('A1', 'No applications found');
+                $filename = 'longlist_empty_' . date('Y-m-d_His') . '.xlsx';
+            } else {
+                // ROW 1: Title (merged A1:D1)
+                $sheet->setCellValue('A1', $title);
+                $sheet->mergeCells('A1:D1');
+                $sheet->getStyle('A1')->getFont()->setBold(true)->setSize(14);
+                $sheet->getStyle('A1')->getAlignment()
+                    ->setHorizontal(Alignment::HORIZONTAL_CENTER)
+                    ->setVertical(Alignment::VERTICAL_CENTER);
+                $sheet->getRowDimension(1)->setRowHeight(30);
+
+                // ROW 2: Section Headers (with merged cells)
+                $this->setSectionHeaders($sheet);
+
+                // ROW 3: Sub-section Headers (with merged cells)
+                $this->setSubSectionHeaders($sheet);
+
+                // ROW 4: Column Field Names
+                $this->setColumnHeaders($sheet);
+
+                $sheet->getRowDimension(2)->setRowHeight(40);
+                $sheet->getRowDimension(3)->setRowHeight(40);
+                $sheet->getRowDimension(4)->setRowHeight(70);
+
+                $sheet->getStyle('A2:AP4')->getAlignment()
+                    ->setWrapText(true)
+                    ->setShrinkToFit(false)
+                    ->setVertical(Alignment::VERTICAL_CENTER)
+                    ->setHorizontal(Alignment::HORIZONTAL_CENTER);
+
+                // Data rows (starting from row 5)
+                $this->writeDataRows($sheet, $dataRows);
+
+                // Styling
+                $this->applyStyles($sheet, count($dataRows));
+
+                $filename = 'longlist_export_' . date('Y-m-d_His') . '.xlsx';
+            }
+
+            // Write to output
+            $writer = new Xlsx($spreadsheet);
+            $tmp = fopen('php://temp', 'w+b');
+            $writer->save($tmp);
+            rewind($tmp);
+            $binary = stream_get_contents($tmp);
+            fclose($tmp);
+
+            return $this->response
+                ->setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+                ->setHeader('Content-Disposition', 'attachment; filename="' . $filename . '"')
+                ->setHeader('Cache-Control', 'max-age=0')
+                ->setBody($binary);
+
+        } catch (\Exception $e) {
+            log_message('error', 'exportApplicationsXlsx error: ' . $e->getMessage());
+            log_message('error', 'Stack trace: ' . $e->getTraceAsString());
+            return $this->respond([
+                'success' => false,
+                'message' => 'Failed to export XLSX',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * ROW 2: Set section headers with merged cells
+     */
+    private function setSectionHeaders($sheet)
+    {
+        // A2:A3 - SERIALISATION
+        $sheet->setCellValue('A2', 'SERIALISATION');
+        $sheet->mergeCells('A2:A3');
+
+        // B2:L3 - GENERAL INFORMATION
+        $sheet->setCellValue('B2', 'GENERAL INFORMATION');
+        $sheet->mergeCells('B2:L3');
+
+        // M2:W2 - PROFESSIONAL AND ACADEMIC CERTIFICATES
+        $sheet->setCellValue('M2', 'PROFESSIONAL AND ACADEMIC CERTIFICATES');
+        $sheet->mergeCells('M2:W2');
+
+        // X2:AA3 - GENERAL AND SPECIFIC EXPERIENCE
+        $sheet->setCellValue('X2', 'GENERAL AND SPECIFIC EXPERIENCE' . "\n" . '(MANDATORY)');
+        $sheet->mergeCells('X2:AA3');
+
+        // AB2:AF3 - CURRENT EMPLOYMENT, RENUMERATION, NOTICE PERIOD & REFEREES
+        $sheet->setCellValue('AB2', 'CURRENT EMPLOYMENT, RENUMERATION, NOTICE PERIOD & REFEREES');
+        $sheet->mergeCells('AB2:AF3');
+
+        // AG2:AP2 - CHAPTER 6 REQUIREMENTS VERIFICATION
+        $sheet->setCellValue('AG2', 'CHAPTER 6 REQUIREMENTS VERIFICATION');
+        $sheet->mergeCells('AG2:AP2');
+
+        // Style section headers
+        $sectionRanges = ['A2:A3', 'B2:L3', 'M2:W2', 'X2:AA3', 'AB2:AF3', 'AG2:AP2'];
+        foreach ($sectionRanges as $range) {
+            $sheet->getStyle($range)->getFont()->setBold(true)->setSize(11);
+            $sheet->getStyle($range)->getAlignment()
+                ->setHorizontal(Alignment::HORIZONTAL_CENTER)
+                ->setVertical(Alignment::VERTICAL_CENTER)
+                ->setWrapText(true);
+            $sheet->getStyle($range)->getFill()
+                ->setFillType(Fill::FILL_SOLID)
+                ->getStartColor()->setARGB('FFD3D3D3');
+            $sheet->getStyle($range)->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN);
+        }
+    }
+
+    /**
+     * ROW 3: Set sub-section headers with merged cells
+     */
+    private function setSubSectionHeaders($sheet)
+    {
+        // M3:N3 - Doctorate Degree (MANDATORY)
+        $sheet->setCellValue('M3', 'Doctorate Degree' . "\n" . '(MANDATORY)');
+        $sheet->mergeCells('M3:N3');
+
+        // O3:P3 - Master's Degree (MANDATORY)
+        $sheet->setCellValue('O3', 'Master\'s Degree' . "\n" . '(MANDATORY)');
+        $sheet->mergeCells('O3:P3');
+
+        // Q3:R3 - Bachelor's Degree (MANDATORY)
+        $sheet->setCellValue('Q3', 'Bachelor\'s Degree' . "\n" . '(MANDATORY)');
+        $sheet->mergeCells('Q3:R3');
+
+        // AG3:AH3 - Tax Compliance
+        $sheet->setCellValue('AG3', 'Individual Tax Compliance Certificate from the Kenya Revenue Authority (KRA)');
+        $sheet->mergeCells('AG3:AH3');
+
+        // AI3:AJ3 - HELB
+        $sheet->setCellValue('AI3', 'Higher Education Loans Board (HELB) Status');
+        $sheet->mergeCells('AI3:AJ3');
+
+        // AK3:AL3 - DCI
+        $sheet->setCellValue('AK3', 'Directorate of Criminal Investigation (Certificate of Good)');
+        $sheet->mergeCells('AK3:AL3');
+
+        // AM3:AN3 - CRB
+        $sheet->setCellValue('AM3', 'Credit Reference Bureau Clearance Certificate');
+        $sheet->mergeCells('AM3:AN3');
+
+        // AO3:AP3 - EACC
+        $sheet->setCellValue('AO3', 'Clearance Certificate from the Ethics and Anti-Corruption Commission (EACC)');
+        $sheet->mergeCells('AO3:AP3');
+
+        // Style sub-section headers
+        $subRanges = ['M3:N3', 'O3:P3', 'Q3:R3', 'AG3:AH3', 'AI3:AJ3', 'AK3:AL3', 'AM3:AN3', 'AO3:AP3'];
+        foreach ($subRanges as $range) {
+            $sheet->getStyle($range)->getFont()->setBold(true)->setSize(10);
+            $sheet->getStyle($range)->getAlignment()
+                ->setHorizontal(Alignment::HORIZONTAL_CENTER)
+                ->setVertical(Alignment::VERTICAL_CENTER)
+                ->setWrapText(true);
+            $sheet->getStyle($range)->getFill()
+                ->setFillType(Fill::FILL_SOLID)
+                ->getStartColor()->setARGB('FFE6E6E6');
+            $sheet->getStyle($range)->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN);
+        }
+    }
+
+    /**
+     * ROW 4: Set column field names
+     */
+    private function setColumnHeaders($sheet)
+    {
+        $headers = [
+            'A4' => 'Serial Number',
+            'B4' => 'Full Names of Applicant',
+            'C4' => 'Applicant Address',
+            'D4' => 'Telephone Number',
+            'E4' => 'Email Address',
+            'F4' => 'Nationality',
+            'G4' => 'County of Origin (I.D)',
+            'H4' => 'Date of Birth',
+            'I4' => 'Age',
+            'J4' => 'ID/Passport Number' . "\n" . '(Kenyan Citizen)',
+            'K4' => 'Gender',
+            'L4' => 'PLWD (Y/N)',
+            'M4' => 'Doctorate Degree Name/Field/Institution/Year',
+            'N4' => 'Doctorate in a relevant field from a recognized University (Y/N)',
+            'O4' => 'Master\'s Degree Name/Field/Institution/Year',
+            'P4' => 'Master\'s Degree in a relevant field from a recognized University (Y/N)',
+            'Q4' => 'Bachelor\'s Degree Name/Field/Institution/Year',
+            'R4' => 'Bachelor\'s Degree in a relevant field from a recognized University (Y/N)',
+            'S4' => 'Active member of a professional body',
+            'T4' => 'Good Standing',
+            'U4' => 'leadership course lasting not less than four (4) weeks or equivalent',
+            'V4' => 'Authored a minimum of eighteen (18) publications in peer reviewed journals, book and book chapters',
+            'W4' => 'Details of All Non-Mandatory Certificates in the application (Title/Institution/Duration)',
+            'X4' => 'Specific Number of years of General Experience',
+            'Y4' => 'Fifteen (15) years\' relevant work experience',
+            'Z4' => 'Specific Number of years of Senior Management Experience',
+            'AA4' => 'Five (5) of which must have been at senior management level',
+            'AB4' => 'Current Employer, Duration and Role',
+            'AC4' => 'Expected Salary (monthly in Ksh)',
+            'AD4' => 'Current Salary (monthly in Ksh)',
+            'AE4' => 'Notice Period Required (months)',
+            'AF4' => 'Three Referees Provided' . "\n" . '(Name and Contact Details)',
+            'AG4' => 'Tax Compliance Certificate (Y/N)',
+            'AH4' => 'Certificate Validity up to (indicate date)',
+            'AI4' => 'HELB clearance Certificate/Valid Compliance (Y/N)',
+            'AJ4' => 'Certificate Validity from (indicate date)',
+            'AK4' => 'DCI clearance Certificate (Y/N)',
+            'AL4' => 'Certificate Validity from (indicate date)',
+            'AM4' => 'CRB clearance Certificate (Y/N)',
+            'AN4' => 'Certificate Validity from (indicate date)',
+            'AO4' => 'EACC completed First Schedule (s.13) and a Self-declaration Form (Y/N)',
+            'AP4' => 'Certificate Validity from (indicate date)',
+        ];
+
+        foreach ($headers as $cell => $text) {
+            $sheet->setCellValue($cell, $text);
+            $sheet->getStyle($cell)->getFont()->setBold(true)->setSize(9);
+            $sheet->getStyle($cell)->getAlignment()
+                ->setHorizontal(Alignment::HORIZONTAL_CENTER)
+                ->setVertical(Alignment::VERTICAL_CENTER)
+                ->setWrapText(true);
+            $sheet->getStyle($cell)->getFill()
+                ->setFillType(Fill::FILL_SOLID)
+                ->getStartColor()->setARGB('FFFFFFFF');
+            $sheet->getStyle($cell)->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN);
+        }
+
+        $sheet->getRowDimension(4)->setRowHeight(50);
+    }
+
+    /**
+     * Write data rows starting from row 5
+     */
+    private function writeDataRows($sheet, array $dataRows)
+    {
+        $startRow = 5;
+
+        foreach ($dataRows as $rowIndex => $rowData) {
+            $excelRow = $startRow + $rowIndex;
+            $colIndex = 1;
+
+            foreach ($rowData as $cellValue) {
+                $cellCoord = $this->columnLetter($colIndex - 1) . $excelRow;
+                $sheet->setCellValue($cellCoord, $cellValue);
+
+                // Wrap text for long content
+                if (strlen($cellValue) > 30) {
+                    $sheet->getStyle($cellCoord)->getAlignment()->setWrapText(true);
+                }
+
+                // Border
+                $sheet->getStyle($cellCoord)->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN);
+
+                $colIndex++;
+            }
+        }
+    }
+
+    /**
+     * Apply final styling and column widths
+     */
+    private function applyStyles($sheet, $dataRowCount)
+    {
+        // Set column widths
+        $columnWidths = [
+            'A' => 8,   // Serial
+            'B' => 25,  // Name
+            'C' => 20,  // Address
+            'D' => 15,  // Phone
+            'E' => 25,  // Email
+            'F' => 12,  // Nationality
+            'G' => 15,  // County
+            'H' => 12,  // DOB
+            'I' => 8,   // Age
+            'J' => 15,  // ID
+            'K' => 10,  // Gender
+            'L' => 10,  // PLWD
+            'M' => 40,  // Doctorate Name
+            'N' => 10,  // Doctorate Y/N
+            'O' => 40,  // Masters Name
+            'P' => 10,  // Masters Y/N
+            'Q' => 40,  // Bachelors Name
+            'R' => 10,  // Bachelors Y/N
+            'S' => 30,  // Professional body
+            'T' => 20,  // Good standing
+            'U' => 30,  // Leadership
+            'V' => 35,  // Publications
+            'W' => 35,  // Certificates
+            'X' => 12,  // Years exp
+            'Y' => 35,  // 15 years exp
+            'Z' => 12,  // Senior years
+            'AA' => 35, // Senior exp
+            'AB' => 30, // Current employer
+            'AC' => 15, // Expected salary
+            'AD' => 15, // Current salary
+            'AE' => 12, // Notice period
+            'AF' => 35, // Referees
+            'AG' => 10, // Tax Y/N
+            'AH' => 15, // Tax validity
+            'AI' => 10, // HELB Y/N
+            'AJ' => 15, // HELB validity
+            'AK' => 10, // DCI Y/N
+            'AL' => 15, // DCI validity
+            'AM' => 10, // CRB Y/N
+            'AN' => 15, // CRB validity
+            'AO' => 10, // EACC Y/N
+            'AP' => 15, // EACC validity
+        ];
+
+        foreach ($columnWidths as $col => $width) {
+            $sheet->getColumnDimension($col)->setWidth($width);
+        }
+
+        // Freeze panes (freeze first 4 rows)
+        $sheet->freezePane('A5');
+
+        // Set row height for data rows
+        for ($row = 5; $row <= 4 + $dataRowCount; $row++) {
+            $sheet->getRowDimension($row)->setRowHeight(-1); // Auto height
+        }
+    }
+
+    /**
+     * Convert column index to Excel letter
+     */
+    private function columnLetter(int $index): string
+    {
+        $letter = '';
+        while ($index >= 0) {
+            $letter = chr(65 + ($index % 26)) . $letter;
+            $index = intdiv($index, 26) - 1;
+        }
+        return $letter;
+    }
     /**
      * Add internal note to application
      */
@@ -1003,6 +1465,7 @@ class Applications extends BaseController
                     'title' => $app['title'] ?? null,
                     'location' => $app['location'] ?? null,
                     'experienceYears' => $app['experienceYears'] ?? null,
+                    'totalExperienceMonths' => $app['totalExperienceMonths'] ?? 0,
                     'resumeUrl' => $app['resumeUrl'] ?? null,
                     'domains' => [],
                     'skills' => [],
@@ -1280,6 +1743,205 @@ class Applications extends BaseController
                 'message' => 'Failed to retrieve applications',
                 'error' => $e->getMessage()
             ], 500);
+        }
+    }
+
+    /**
+     * candidate_profiles.id by users.id
+     */
+    private function getCandidateProfileIdByUserId(string $candidateUserId): ?string
+    {
+        try {
+            $db = \Config\Database::connect();
+            $row = $db->table('candidate_profiles')
+                ->select('id')
+                ->where('userId', $candidateUserId)
+                ->get()
+                ->getRowArray();
+
+            return $row['id'] ?? null;
+        } catch (\Exception $e) {
+            log_message('error', 'getCandidateProfileIdByUserId error: ' . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * candidate_personal_info
+     */
+    private function getCandidatePersonalInfoByProfileId(string $profileId): ?array
+    {
+        try {
+            $db = \Config\Database::connect();
+            $row = $db->table('candidate_personal_info')
+                ->where('candidateId', $profileId)
+                ->get()
+                ->getRowArray();
+
+            return $row ?: null;
+        } catch (\Exception $e) {
+            log_message('error', 'getCandidatePersonalInfoByProfileId error: ' . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * candidate_publications
+     */
+    private function getCandidatePublicationsByProfileId(string $profileId): array
+    {
+        try {
+            $db = \Config\Database::connect();
+            return $db->table('candidate_publications')
+                ->where('candidateId', $profileId)
+                ->orderBy('year', 'DESC')
+                ->get()
+                ->getResultArray();
+        } catch (\Exception $e) {
+            log_message('error', 'getCandidatePublicationsByProfileId error: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * candidate_professional_memberships (IMPORTANT: table name per schema)
+     */
+    private function getCandidateMembershipsByProfileId(string $profileId): array
+    {
+        try {
+            $db = \Config\Database::connect();
+            return $db->table('candidate_professional_memberships')
+                ->where('candidateId', $profileId)
+                ->orderBy('createdAt', 'DESC')
+                ->get()
+                ->getResultArray();
+        } catch (\Exception $e) {
+            log_message('error', 'getCandidateMembershipsByProfileId error: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * candidate_clearances
+     */
+    private function getCandidateClearancesByProfileId(string $profileId): array
+    {
+        try {
+            $db = \Config\Database::connect();
+            return $db->table('candidate_clearances')
+                ->where('candidateId', $profileId)
+                ->orderBy('issueDate', 'DESC')
+                ->get()
+                ->getResultArray();
+        } catch (\Exception $e) {
+            log_message('error', 'getCandidateClearancesByProfileId error: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * candidate_courses
+     */
+    private function getCandidateCoursesByProfileId(string $profileId): array
+    {
+        try {
+            $db = \Config\Database::connect();
+            return $db->table('candidate_courses')
+                ->where('candidateId', $profileId)
+                ->orderBy('year', 'DESC')
+                ->get()
+                ->getResultArray();
+        } catch (\Exception $e) {
+            log_message('error', 'getCandidateCoursesByProfileId error: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * candidate_referees
+     */
+    private function getCandidateRefereesByProfileId(string $profileId): array
+    {
+        try {
+            $db = \Config\Database::connect();
+            return $db->table('candidate_referees')
+                ->where('candidateId', $profileId)
+                ->orderBy('createdAt', 'DESC')
+                ->get()
+                ->getResultArray();
+        } catch (\Exception $e) {
+            log_message('error', 'getCandidateRefereesByProfileId error: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * candidate_files (attachments)
+     */
+    private function getCandidateFilesByProfileId(string $profileId): array
+    {
+        try {
+            $db = \Config\Database::connect();
+            return $db->table('candidate_files')
+                ->where('candidateId', $profileId)
+                ->orderBy('createdAt', 'DESC')
+                ->get()
+                ->getResultArray();
+        } catch (\Exception $e) {
+            log_message('error', 'getCandidateFilesByProfileId error: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * certifications
+     */
+    private function getCandidateCertificationsByProfileId(string $profileId): array
+    {
+        try {
+            $db = \Config\Database::connect();
+            return $db->table('certifications')
+                ->where('candidateId', $profileId)
+                ->orderBy('issueDate', 'DESC')
+                ->get()
+                ->getResultArray();
+        } catch (\Exception $e) {
+            log_message('error', 'getCandidateCertificationsByProfileId error: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * candidate_languages joined with languages
+     */
+    private function getCandidateLanguagesByProfileId(string $profileId): array
+    {
+        try {
+            $db = \Config\Database::connect();
+            $rows = $db->table('candidate_languages')
+                ->select('candidate_languages.*, languages.id as language_id, languages.name as language_name')
+                ->join('languages', 'languages.id = candidate_languages.languageId', 'left')
+                ->where('candidate_languages.candidateId', $profileId)
+                ->orderBy('candidate_languages.createdAt', 'DESC')
+                ->get()
+                ->getResultArray();
+
+            return array_map(function ($r) {
+                return [
+                    'id' => $r['id'] ?? null,
+                    'candidateId' => $r['candidateId'] ?? null,
+                    'languageId' => $r['languageId'] ?? null,
+                    'proficiency' => $r['proficiency'] ?? null,
+                    'createdAt' => $r['createdAt'] ?? null,
+                    'language' => [
+                        'id' => $r['language_id'] ?? null,
+                        'name' => $r['language_name'] ?? null
+                    ]
+                ];
+            }, $rows);
+        } catch (\Exception $e) {
+            log_message('error', 'getCandidateLanguagesByProfileId error: ' . $e->getMessage());
+            return [];
         }
     }
 }
