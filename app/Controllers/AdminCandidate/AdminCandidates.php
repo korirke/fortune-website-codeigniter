@@ -26,6 +26,8 @@ class AdminCandidates extends BaseController
      *     @OA\Parameter(name="skillId", in="query", required=false, @OA\Schema(type="string"), description="Filter by skill ID"),
      *     @OA\Parameter(name="openToWork", in="query", required=false, @OA\Schema(type="boolean"), description="Filter by open to work status"),
      *     @OA\Parameter(name="location", in="query", required=false, @OA\Schema(type="string"), description="Filter by location"),
+     *     @OA\Parameter(name="minExperience", in="query", required=false, @OA\Schema(type="integer"), description="Minimum experience in months"),
+     *     @OA\Parameter(name="maxExperience", in="query", required=false, @OA\Schema(type="integer"), description="Maximum experience in months"),
      *     @OA\Parameter(name="page", in="query", required=false, @OA\Schema(type="integer"), description="Page number", example=1),
      *     @OA\Parameter(name="limit", in="query", required=false, @OA\Schema(type="integer"), description="Items per page", example=10),
      *     @OA\Response(response="200", description="Candidates retrieved")
@@ -38,7 +40,7 @@ class AdminCandidates extends BaseController
             $page = max(1, (int) ($this->request->getGet('page') ?? 1));
             $limit = max(1, min(100, (int) ($this->request->getGet('limit') ?? 20)));
             $skip = ($page - 1) * $limit;
-            
+
             // Get filters
             $domainId = $this->request->getGet('domainId');
             $skillId = $this->request->getGet('skillId');
@@ -46,21 +48,23 @@ class AdminCandidates extends BaseController
             $location = $this->request->getGet('location');
             $search = $this->request->getGet('search');
             $hasResume = $this->request->getGet('hasResume');
+            $minExperience = $this->request->getGet('minExperience');
+            $maxExperience = $this->request->getGet('maxExperience');
             $sortBy = $this->request->getGet('sortBy') ?? 'createdAt';
             $sortOrder = strtoupper($this->request->getGet('sortOrder') ?? 'DESC');
-            
+
             // Validate sort order
             if (!in_array($sortOrder, ['ASC', 'DESC'])) {
                 $sortOrder = 'DESC';
             }
-            
+
             // Use Query Builder
             $db = \Config\Database::connect();
             $builder = $db->table('candidate_profiles');
-            
-            // Select candidate_profiles columns
-            $builder->select('candidate_profiles.*');
-            
+
+            // ✅ Select candidate_profiles columns including totalExperienceMonths
+            $builder->select('candidate_profiles.*, candidate_profiles.totalExperienceMonths');
+
             // Apply filters
             if ($openToWork !== null) {
                 $openToWorkValue = filter_var($openToWork, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
@@ -68,11 +72,11 @@ class AdminCandidates extends BaseController
                     $builder->where('candidate_profiles.openToWork', $openToWorkValue);
                 }
             }
-            
+
             if ($location) {
                 $builder->like('candidate_profiles.location', $location, 'both');
             }
-            
+
             if ($hasResume !== null) {
                 $hasResumeValue = filter_var($hasResume, FILTER_VALIDATE_BOOLEAN);
                 if ($hasResumeValue) {
@@ -81,7 +85,17 @@ class AdminCandidates extends BaseController
                     $builder->where('candidate_profiles.resumeUrl IS NULL');
                 }
             }
-            
+
+            if ($minExperience !== null && $minExperience !== '') {
+                $minExp = (int) $minExperience;
+                $builder->where('candidate_profiles.totalExperienceMonths >=', $minExp);
+            }
+
+            if ($maxExperience !== null && $maxExperience !== '') {
+                $maxExp = (int) $maxExperience;
+                $builder->where('candidate_profiles.totalExperienceMonths <=', $maxExp);
+            }
+
             // Search filter
             $hasSearchJoin = false;
             if ($search) {
@@ -95,34 +109,37 @@ class AdminCandidates extends BaseController
                     ->orLike('candidate_profiles.location', $search, 'both')
                     ->groupEnd();
             }
-            
+
             // Domain filter
             if ($domainId) {
                 $builder->join('candidate_domains', 'candidate_domains.candidateId = candidate_profiles.id', 'inner')
                     ->where('candidate_domains.domainId', $domainId);
             }
-            
+
             // Skill filter
             if ($skillId) {
                 $builder->join('candidate_skills', 'candidate_skills.candidateId = candidate_profiles.id', 'inner')
                     ->where('candidate_skills.skillId', $skillId);
             }
-            
+
             // Group by to avoid duplicates
             if ($domainId || $skillId) {
                 $builder->groupBy('candidate_profiles.id');
             }
-            
+
             // Clone builder for count
             $countBuilder = clone $builder;
             $total = $countBuilder->countAllResults(false);
-            
+
             // Apply sorting
             if (in_array($sortBy, ['firstName', 'lastName'])) {
                 if (!$hasSearchJoin) {
                     $builder->join('users', 'users.id = candidate_profiles.userId', 'inner');
                 }
                 $builder->orderBy('users.' . $sortBy, $sortOrder);
+            } elseif ($sortBy === 'totalExperienceMonths') {
+
+                $builder->orderBy('candidate_profiles.totalExperienceMonths', $sortOrder);
             } else {
                 $allowedSortFields = ['createdAt', 'updatedAt', 'title', 'location', 'openToWork'];
                 if (in_array($sortBy, $allowedSortFields)) {
@@ -131,15 +148,15 @@ class AdminCandidates extends BaseController
                     $builder->orderBy('candidate_profiles.createdAt', 'DESC');
                 }
             }
-            
+
             // Get paginated results
             $candidates = $builder->limit($limit, $skip)->get()->getResultArray();
-            
+
             // Format candidates
             $formattedCandidates = $this->formatCandidates($candidates);
-            
+
             $totalPages = (int) ceil($total / $limit);
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Candidates retrieved successfully',
@@ -179,30 +196,30 @@ class AdminCandidates extends BaseController
         try {
             $candidateModel = new CandidateProfile();
             $db = \Config\Database::connect();
-            
+
             // Total candidates
             $totalCandidates = $candidateModel->countAllResults(false);
-            
+
             // Active candidates (logged in within 30 days)
             $thirtyDaysAgo = date('Y-m-d H:i:s', strtotime('-30 days'));
             $activeCandidates = $db->table('candidate_profiles')
                 ->join('users', 'users.id = candidate_profiles.userId', 'inner')
                 ->where('users.lastLoginAt >=', $thirtyDaysAgo)
                 ->countAllResults();
-            
+
             // Candidates with resume
             $candidatesWithResume = $candidateModel->where('resumeUrl IS NOT NULL')
                 ->countAllResults(false);
-            
+
             // Candidates open to work
             $candidatesOpenToWork = $candidateModel->where('openToWork', true)
                 ->countAllResults(false);
-            
+
             // Recent candidates (last 7 days)
             $sevenDaysAgo = date('Y-m-d H:i:s', strtotime('-7 days'));
             $recentCandidates = $candidateModel->where('createdAt >=', $sevenDaysAgo)
                 ->countAllResults(false);
-            
+
             // Top skills
             $topSkillsRaw = $db->table('candidate_skills')
                 ->select('skillId, COUNT(*) as count')
@@ -211,7 +228,7 @@ class AdminCandidates extends BaseController
                 ->limit(10)
                 ->get()
                 ->getResultArray();
-            
+
             $skillIds = array_column($topSkillsRaw, 'skillId');
             $skillsMap = [];
             if (!empty($skillIds)) {
@@ -221,7 +238,7 @@ class AdminCandidates extends BaseController
                     $skillsMap[$skill['id']] = $skill;
                 }
             }
-            
+
             $topSkills = [];
             foreach ($topSkillsRaw as $stat) {
                 $skill = $skillsMap[$stat['skillId']] ?? null;
@@ -231,7 +248,7 @@ class AdminCandidates extends BaseController
                     'count' => (int) $stat['count']
                 ];
             }
-            
+
             // Top domains
             $topDomainsRaw = $db->table('candidate_domains')
                 ->select('domainId, COUNT(*) as count')
@@ -240,7 +257,7 @@ class AdminCandidates extends BaseController
                 ->limit(10)
                 ->get()
                 ->getResultArray();
-            
+
             $domainIds = array_column($topDomainsRaw, 'domainId');
             $domainsMap = [];
             if (!empty($domainIds)) {
@@ -250,7 +267,7 @@ class AdminCandidates extends BaseController
                     $domainsMap[$domain['id']] = $domain;
                 }
             }
-            
+
             $topDomains = [];
             foreach ($topDomainsRaw as $stat) {
                 $domain = $domainsMap[$stat['domainId']] ?? null;
@@ -260,7 +277,7 @@ class AdminCandidates extends BaseController
                     'count' => (int) $stat['count']
                 ];
             }
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Statistics retrieved successfully',
@@ -301,7 +318,7 @@ class AdminCandidates extends BaseController
     {
         // Log the received parameter for debugging
         log_message('debug', 'getCandidateById called with param: ' . var_export($candidateProfileId, true));
-        
+
         if (empty($candidateProfileId)) {
             log_message('error', 'Candidate profile ID is empty or null');
             return $this->respond([
@@ -310,7 +327,7 @@ class AdminCandidates extends BaseController
                 'data' => null
             ], 400);
         }
-        
+
         try {
             $candidateModel = new CandidateProfile();
             $candidate = $candidateModel->find($candidateProfileId);
@@ -323,10 +340,10 @@ class AdminCandidates extends BaseController
                     'data' => null
                 ], 404);
             }
-            
+
             // Format candidate with all relations
             $formattedCandidate = $this->formatSingleCandidate($candidate);
-            
+
             if (!$formattedCandidate) {
                 return $this->respond([
                     'success' => false,
@@ -365,7 +382,7 @@ class AdminCandidates extends BaseController
     {
         // Log the received parameter for debugging
         log_message('debug', 'getCandidateApplications called with param: ' . var_export($candidateProfileId, true));
-        
+
         if (empty($candidateProfileId)) {
             log_message('error', 'Candidate profile ID is empty or null');
             return $this->respond([
@@ -374,11 +391,11 @@ class AdminCandidates extends BaseController
                 'data' => null
             ], 400);
         }
-        
+
         try {
             $candidateModel = new CandidateProfile();
             $candidate = $candidateModel->find($candidateProfileId);
-            
+
             if (!$candidate) {
                 log_message('error', 'Candidate profile not found: ' . $candidateProfileId);
                 return $this->respond([
@@ -387,16 +404,16 @@ class AdminCandidates extends BaseController
                     'data' => null
                 ], 404);
             }
-            
+
             // Get applications for this candidate
             $applicationModel = new \App\Models\Application();
             $applications = $applicationModel->where('candidateId', $candidate['userId'])
                 ->orderBy('appliedAt', 'DESC')
                 ->findAll();
-            
+
             // Format applications with job details
             $formattedApplications = $this->formatApplications($applications);
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Applications retrieved successfully',
@@ -426,29 +443,29 @@ class AdminCandidates extends BaseController
         $educationModel = new \App\Models\Education();
         $experienceModel = new \App\Models\Experience();
         $certificationModel = new \App\Models\Certification();
-        
+
         $formattedCandidates = [];
-        
+
         foreach ($candidates as $candidate) {
             if (empty($candidate['userId'])) {
                 continue;
             }
-            
+
             $user = $userModel->select('id, email, firstName, lastName, phone, avatar, emailVerified, status, createdAt')
                 ->find($candidate['userId']);
-            
+
             if (!$user) {
                 continue;
             }
-            
+
             $candidate['user'] = $user;
-            
+
             // Get skills (limit 10)
             $candidateSkills = $candidateSkillModel->where('candidateId', $candidate['id'])
                 ->orderBy('createdAt', 'DESC')
                 ->limit(10)
                 ->findAll();
-            
+
             $skills = [];
             foreach ($candidateSkills as $cs) {
                 $skill = $skillModel->find($cs['skillId']);
@@ -465,7 +482,7 @@ class AdminCandidates extends BaseController
                 }
             }
             $candidate['skills'] = $skills;
-            
+
             // Get domains
             $candidateDomains = $candidateDomainModel->where('candidateId', $candidate['id'])->findAll();
             $domains = [];
@@ -483,17 +500,17 @@ class AdminCandidates extends BaseController
                 }
             }
             $candidate['domains'] = $domains;
-            
+
             // Get counts
             $candidate['_count'] = [
                 'educations' => (int) $educationModel->where('candidateId', $candidate['id'])->countAllResults(false),
                 'experiences' => (int) $experienceModel->where('candidateId', $candidate['id'])->countAllResults(false),
                 'certifications' => (int) $certificationModel->where('candidateId', $candidate['id'])->countAllResults(false)
             ];
-            
+
             $formattedCandidates[] = $candidate;
         }
-        
+
         return $formattedCandidates;
     }
 
@@ -502,23 +519,23 @@ class AdminCandidates extends BaseController
         if (empty($candidate['userId'])) {
             return null;
         }
-        
+
         $userModel = new \App\Models\User();
         $user = $userModel->select('id, firstName, lastName, email, phone, avatar, emailVerified, status, role, createdAt, lastLoginAt')
             ->find($candidate['userId']);
-        
+
         if (!$user) {
             return null;
         }
-        
+
         $candidate['user'] = $user;
-        
+
         // Get skills
         $candidateSkillModel = new \App\Models\CandidateSkill();
         $candidateSkills = $candidateSkillModel->where('candidateId', $candidate['id'])
             ->orderBy('createdAt', 'DESC')
             ->findAll();
-        
+
         $skillModel = new \App\Models\Skill();
         $skills = [];
         foreach ($candidateSkills as $cs) {
@@ -536,11 +553,11 @@ class AdminCandidates extends BaseController
             }
         }
         $candidate['skills'] = $skills;
-        
+
         // Get domains
         $candidateDomainModel = new \App\Models\CandidateDomain();
         $candidateDomains = $candidateDomainModel->where('candidateId', $candidate['id'])->findAll();
-        
+
         $domainModel = new \App\Models\Domain();
         $domains = [];
         foreach ($candidateDomains as $cd) {
@@ -557,29 +574,29 @@ class AdminCandidates extends BaseController
             }
         }
         $candidate['domains'] = $domains;
-        
+
         // Get educations
         $educationModel = new \App\Models\Education();
         $candidate['educations'] = $educationModel->where('candidateId', $candidate['id'])
             ->orderBy('startDate', 'DESC')
             ->findAll();
-        
+
         // Get experiences
         $experienceModel = new \App\Models\Experience();
         $candidate['experiences'] = $experienceModel->where('candidateId', $candidate['id'])
             ->orderBy('startDate', 'DESC')
             ->findAll();
-        
+
         // Get certifications
         $certificationModel = new \App\Models\Certification();
         $candidate['certifications'] = $certificationModel->where('candidateId', $candidate['id'])
             ->orderBy('issueDate', 'DESC')
             ->findAll();
-        
+
         // Get languages
         $candidateLanguageModel = new \App\Models\CandidateLanguage();
         $candidateLanguages = $candidateLanguageModel->where('candidateId', $candidate['id'])->findAll();
-        
+
         $languageModel = new \App\Models\Language();
         $languages = [];
         foreach ($candidateLanguages as $cl) {
@@ -596,13 +613,13 @@ class AdminCandidates extends BaseController
             }
         }
         $candidate['languages'] = $languages;
-        
+
         // Get resumes
         $resumeModel = new \App\Models\ResumeVersion();
         $candidate['resumes'] = $resumeModel->where('candidateId', $candidate['id'])
             ->orderBy('version', 'DESC')
             ->findAll();
-        
+
         return $candidate;
     }
 
@@ -612,32 +629,32 @@ class AdminCandidates extends BaseController
         $companyModel = new \App\Models\Company();
         $categoryModel = new \App\Models\JobCategory();
         $statusHistoryModel = new \App\Models\ApplicationStatusHistory();
-        
+
         $formattedApplications = [];
-        
+
         foreach ($applications as $application) {
             $job = $jobModel->find($application['jobId']);
-            
+
             if ($job) {
                 $company = $companyModel->select('id, name, logo, location')
                     ->find($job['companyId']);
                 $job['company'] = $company;
-                
+
                 $category = $categoryModel->find($job['categoryId']);
                 $job['category'] = $category;
-                
+
                 $application['job'] = $job;
             }
-            
+
             // Get status history
             $statusHistory = $statusHistoryModel->where('applicationId', $application['id'])
                 ->orderBy('changedAt', 'DESC')
                 ->findAll();
             $application['statusHistory'] = $statusHistory;
-            
+
             $formattedApplications[] = $application;
         }
-        
+
         return $formattedApplications;
     }
 }
