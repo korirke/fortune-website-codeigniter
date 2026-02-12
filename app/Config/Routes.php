@@ -65,6 +65,12 @@ $routes->group('api/jobs', ['namespace' => 'App\Controllers\Jobs'], function ($r
     // Nested
     $routes->patch('(:segment)/moderate', 'Jobs::moderateJob/$1', ['filter' => 'auth']);
     $routes->patch('(:segment)/status/(:segment)', 'Jobs::changeJobStatus/$1/$2', ['filter' => 'auth']);
+
+
+    $routes->get('(:segment)/profile-requirements', 'JobProfileRequirements::get/$1');
+    $routes->put('(:segment)/profile-requirements', 'JobProfileRequirements::upsert/$1', ['filter' => 'auth']);
+
+    $routes->get('(:segment)/profile-eligibility', 'JobProfileEligibility::get/$1', ['filter' => 'auth']);
 });
 
 // Public Routes 
@@ -134,6 +140,41 @@ $routes->group('api/candidate', ['namespace' => 'App\Controllers\Candidate', 'fi
     $routes->get('applications', 'Candidate::getApplications');
     $routes->get('applications/(:segment)', 'Candidate::getApplication/$1');
     $routes->post('applications/(:segment)/withdraw', 'Candidate::withdrawApplication/$1');
+
+    // Publications
+    $routes->post('publications', 'Candidate::addPublication');
+    $routes->put('publications/(:segment)', 'Candidate::updatePublication/$1');
+    $routes->delete('publications/(:segment)', 'Candidate::deletePublication/$1');
+
+    // Memberships
+    $routes->post('memberships', 'Candidate::addMembership');
+    $routes->put('memberships/(:segment)', 'Candidate::updateMembership/$1');
+    $routes->delete('memberships/(:segment)', 'Candidate::deleteMembership/$1');
+
+    // Clearances
+    $routes->post('clearances', 'Candidate::addClearance');
+    $routes->put('clearances/(:segment)', 'Candidate::updateClearance/$1');
+    $routes->delete('clearances/(:segment)', 'Candidate::deleteClearance/$1');
+
+    // Courses
+    $routes->post('courses', 'Candidate::addCourse');
+    $routes->put('courses/(:segment)', 'Candidate::updateCourse/$1');
+    $routes->delete('courses/(:segment)', 'Candidate::deleteCourse/$1');
+
+    // Referees
+    $routes->post('referees', 'Candidate::addReferee');
+    $routes->put('referees/(:segment)', 'Candidate::updateReferee/$1');
+    $routes->delete('referees/(:segment)', 'Candidate::deleteReferee/$1');
+
+    // Personal Info
+    $routes->get('personal-info', 'Candidate::getPersonalInfo');
+    $routes->put('personal-info', 'Candidate::upsertPersonalInfo');
+
+    // Candidate files
+    $routes->post('files/upload', 'Candidate::uploadCandidateFile');
+    $routes->get('files', 'Candidate::listCandidateFiles');
+    $routes->delete('files/(:segment)', 'Candidate::deleteCandidateFile/$1');
+
 });
 
 // Applications Routes
@@ -148,7 +189,41 @@ $routes->group('api/applications', ['namespace' => 'App\Controllers\Applications
     $routes->put('(:segment)/status', 'Applications::updateApplicationStatus/$1');
     $routes->post('(:segment)/notes', 'Applications::addInternalNote/$1');
     $routes->post('bulk-update', 'Applications::bulkUpdateStatus');
+
+    $routes->get('export/csv', 'Applications::exportApplicationsCsv');
+    $routes->get('export/xlsx', 'Applications::exportApplicationsXlsx');
 });
+
+// Shortlist Routes
+$routes->group('api/shortlist', ['namespace' => 'App\Controllers\Shortlist', 'filter' => 'auth'], function ($routes) {
+    // Jobs list
+    $routes->get('jobs', 'Shortlist::getJobsWithShortlists');
+
+    // Criteria management
+    $routes->get('(:segment)/criteria', 'Shortlist::getCriteria/$1');
+    $routes->put('(:segment)/criteria', 'Shortlist::updateCriteria/$1');
+
+    // Shortlist generation
+    $routes->post('(:segment)/generate', 'Shortlist::generate/$1');
+
+    // Results viewing
+    $routes->get('(:segment)/results', 'Shortlist::getResults/$1');
+    $routes->get('(:segment)/results/(:segment)', 'Shortlist::getResultDetails/$1/$2');
+    $routes->patch('(:segment)/results/(:segment)', 'Shortlist::updateResult/$1/$2');
+
+    $routes->post('(:segment)/rerank', 'Shortlist::rerank/$1');
+
+    // admin scoring
+    $routes->patch('(:segment)/results/(:segment)/admin-score', 'Shortlist::setAdminScores/$1/$2');
+    $routes->patch('(:segment)/results/(:segment)/override-disqualification', 'Shortlist::setOverrideDisqualification/$1/$2');
+
+    // Export
+    $routes->get('(:segment)/export', 'Shortlist::exportExcel/$1');
+
+    // Statistics
+    $routes->get('(:segment)/stats', 'Shortlist::getStats/$1');
+});
+
 
 // Companies Routes 
 $routes->group('api/companies', ['namespace' => 'App\Controllers\Companies'], function ($routes) {
