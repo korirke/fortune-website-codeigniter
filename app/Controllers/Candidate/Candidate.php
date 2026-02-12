@@ -37,6 +37,18 @@ class Candidate extends BaseController
      *     @OA\Response(response="200", description="Profile retrieved")
      * )
      */
+    private function getCandidateProfileOrFail($user)
+    {
+        $profileModel = new CandidateProfile();
+        $profile = $profileModel->where('userId', $user->id)->first();
+        if (!$profile) {
+            return [null, $this->failNotFound('Candidate profile not found')];
+        }
+        return [$profile, null];
+    }
+    /**
+     * Get Profile 
+     */
     public function getProfile()
     {
         try {
@@ -52,7 +64,7 @@ class Candidate extends BaseController
                 return $this->failNotFound('Candidate profile not found');
             }
 
-            // Get related data matching Node.js structure
+            // Get user data INCLUDING PHONE
             $userModel = new User();
             $userData = $userModel->select('id, email, firstName, lastName, phone, avatar, emailVerified, createdAt')
                 ->find($user->id);
@@ -61,7 +73,10 @@ class Candidate extends BaseController
                 return $this->failNotFound('User not found');
             }
 
-            // Get skills with skill details (matching Node.js - wrapped in { skill: ... })
+            // Calculate experience years
+            $profile['experienceYears'] = $profile['experienceYears'] ?? '0 years';
+            $profile['totalExperienceMonths'] = (int) ($profile['totalExperienceMonths'] ?? 0);
+            // Get skills with skill details
             $candidateSkillModel = new CandidateSkill();
             $candidateSkills = $candidateSkillModel->where('candidateId', $profile['id'])
                 ->orderBy('createdAt', 'DESC')
@@ -84,7 +99,7 @@ class Candidate extends BaseController
                 }
             }
 
-            // Get domains with domain details (matching Node.js - wrapped in { domain: ... })
+            // Get domains with domain details
             $candidateDomainModel = new CandidateDomain();
             $candidateDomains = $candidateDomainModel->where('candidateId', $profile['id'])
                 ->orderBy('isPrimary', 'DESC')
@@ -124,7 +139,7 @@ class Candidate extends BaseController
                 ->orderBy('issueDate', 'DESC')
                 ->findAll();
 
-            // Get languages (matching Node.js - wrapped in { language: ... })
+            // Get languages
             $languages = [];
             try {
                 $candidateLanguageModel = new \App\Models\CandidateLanguage();
@@ -155,7 +170,47 @@ class Candidate extends BaseController
                 ->limit(5)
                 ->findAll();
 
-            // Build response matching Node.js structure exactly
+            // Publications
+            $pubModel = new \App\Models\CandidatePublication();
+            $publications = $pubModel->where('candidateId', $profile['id'])
+                ->orderBy('year', 'DESC')
+                ->findAll();
+
+            // Memberships
+            $memModel = new \App\Models\CandidateMembership();
+            $memberships = $memModel->where('candidateId', $profile['id'])
+                ->orderBy('createdAt', 'DESC')
+                ->findAll();
+
+            // Clearances
+            $clearModel = new \App\Models\CandidateClearance();
+            $clearances = $clearModel->where('candidateId', $profile['id'])
+                ->orderBy('issueDate', 'DESC')
+                ->findAll();
+
+            // Courses
+            $courseModel = new \App\Models\CandidateCourse();
+            $courses = $courseModel->where('candidateId', $profile['id'])
+                ->orderBy('year', 'DESC')
+                ->findAll();
+
+            // Referees
+            $refModel = new \App\Models\CandidateReferee();
+            $referees = $refModel->where('candidateId', $profile['id'])
+                ->orderBy('createdAt', 'DESC')
+                ->findAll();
+
+            // Personal info
+            $pinfoModel = new \App\Models\CandidatePersonalInfo();
+            $personalInfo = $pinfoModel->where('candidateId', $profile['id'])->first();
+
+            // Candidate files
+            $fileModel = new \App\Models\CandidateFile();
+            $files = $fileModel->where('candidateId', $profile['id'])
+                ->orderBy('createdAt', 'DESC')
+                ->findAll();
+
+            // Build response 
             $profileData = $profile;
             $profileData['user'] = $userData;
             $profileData['skills'] = $skills;
@@ -165,6 +220,13 @@ class Candidate extends BaseController
             $profileData['certifications'] = $certifications;
             $profileData['languages'] = $languages;
             $profileData['resumes'] = $resumes;
+            $profileData['publications'] = $publications;
+            $profileData['memberships'] = $memberships;
+            $profileData['clearances'] = $clearances;
+            $profileData['courses'] = $courses;
+            $profileData['referees'] = $referees;
+            $profileData['personalInfo'] = $personalInfo;
+            $profileData['files'] = $files;
 
             return $this->respond([
                 'success' => true,
@@ -202,17 +264,17 @@ class Candidate extends BaseController
         try {
             $data = $this->request->getJSON(true);
             $profileModel = new CandidateProfile();
+            $userModel = new User();
 
             $profile = $profileModel->where('userId', $user->id)->first();
             if (!$profile) {
                 return $this->failNotFound('Candidate profile not found');
             }
 
-            // Validate required fields
-            $requiredFields = ['title', 'bio', 'location', 'phone', 'experienceYears'];
+            $requiredFields = ['title', 'bio', 'location'];
             $missingFields = [];
             foreach ($requiredFields as $field) {
-                if (!isset($data[$field]) || $data[$field] === null || (is_string($data[$field]) && trim($data[$field]) === '')) {
+                if (!isset($data[$field]) || trim($data[$field]) === '') {
                     $missingFields[] = $field;
                 }
             }
@@ -221,10 +283,18 @@ class Candidate extends BaseController
                 return $this->fail('Missing required fields: ' . implode(', ', $missingFields), 400);
             }
 
-            // Validate phone format
-            if (isset($data['phone']) && !preg_match('/^\+?[1-9]\d{1,14}$/', $data['phone'])) {
-                return $this->fail('Please provide a valid phone number with country code (e.g., +254712345678)', 400);
+            // Validate and update PHONE in USERS table
+            if (isset($data['phone'])) {
+                if (!preg_match('/^\+?[1-9]\d{1,14}$/', $data['phone'])) {
+                    return $this->fail('Invalid phone number format (e.g., +254712345678)', 400);
+                }
+
+                $userModel->update($user->id, ['phone' => $data['phone']]);
+                unset($data['phone']); // Remove from profile data
             }
+
+            // Remove experienceYears if provided we do calculation
+            unset($data['experienceYears']);
 
             // Handle date conversion
             if (isset($data['availableFrom'])) {
@@ -234,12 +304,12 @@ class Candidate extends BaseController
             // Update profile
             $profileModel->update($profile['id'], $data);
 
-            // Get updated profile with user data
+            // Get updated profile with calculated experience
             $updatedProfile = $profileModel->where('userId', $user->id)->first();
-            $userModel = new User();
-            $userData = $userModel->select('firstName, lastName, email, phone')
-                ->find($user->id);
+            $updatedProfile['experienceYears'] = $updatedProfile['experienceYears'] ?? '0 years';
+            $updatedProfile['totalExperienceMonths'] = (int) ($updatedProfile['totalExperienceMonths'] ?? 0);
 
+            $userData = $userModel->select('firstName, lastName, email, phone')->find($user->id);
             $updatedProfile['user'] = $userData;
 
             return $this->respond([
@@ -248,6 +318,7 @@ class Candidate extends BaseController
                 'data' => $updatedProfile
             ]);
         } catch (\Exception $e) {
+            log_message('error', 'Update profile error: ' . $e->getMessage());
             return $this->respond([
                 'success' => false,
                 'message' => 'Failed to update profile',
@@ -295,7 +366,7 @@ class Candidate extends BaseController
             ->orderBy('version', 'DESC')
             ->first();
 
-        $nextVersion = $latestResume ? ((int)$latestResume['version'] + 1) : 1;
+        $nextVersion = $latestResume ? ((int) $latestResume['version'] + 1) : 1;
 
         // Use transaction to ensure both operations succeed or fail together
         $db = \Config\Database::connect();
@@ -1308,7 +1379,7 @@ class Candidate extends BaseController
                     'availableStartDate' => $applicationData['availableStartDate'],
                     'appliedAt' => $applicationData['appliedAt']
                 ];
-                
+
                 $candidateEmailResult = $emailHelper->sendApplicationReceivedEmail($candidateEmailData);
                 log_message('info', 'Candidate email result: ' . json_encode($candidateEmailResult));
 
@@ -1324,7 +1395,7 @@ class Candidate extends BaseController
                     'profile' => [
                         'title' => $profile['title'] ?? 'N/A',
                         'location' => $profile['location'] ?? 'N/A',
-                        'experienceYears' => $profile['experienceYears'] ?? 'N/A',
+                        'experienceYears' => $profile['experienceYears'] ?? '0 years',
                         'resumeUrl' => $finalResumeUrl
                     ],
                     'job' => [
@@ -1337,7 +1408,7 @@ class Candidate extends BaseController
                     'availableStartDate' => $applicationData['availableStartDate'],
                     'coverLetter' => $applicationData['coverLetter']
                 ];
-                
+
                 $adminEmailResult = $emailHelper->notifyAdminNewApplication($adminEmailData);
                 log_message('info', 'Admin email result: ' . json_encode($adminEmailResult));
 
@@ -1706,4 +1777,637 @@ class Candidate extends BaseController
             ], 500);
         }
     }
+
+    public function addPublication()
+    {
+        $user = $this->request->user ?? null;
+        if (!$user)
+            return $this->fail('Unauthorized', 401);
+
+        [$profile, $resp] = $this->getCandidateProfileOrFail($user);
+        if (!$profile)
+            return $resp;
+
+        $data = $this->request->getJSON(true);
+
+        if (empty(trim($data['title'] ?? '')))
+            return $this->fail('Title is required', 400);
+        if (empty($data['year']))
+            return $this->fail('Year is required', 400);
+
+        $model = new \App\Models\CandidatePublication();
+        $id = uniqid('pub_');
+
+        $model->insert([
+            'id' => $id,
+            'candidateId' => $profile['id'],
+            'title' => trim($data['title']),
+            'type' => $data['type'] ?? 'Journal',
+            'journalOrPublisher' => $data['journalOrPublisher'] ?? null,
+            'year' => $data['year'],
+            'link' => $data['link'] ?? null,
+            'updatedAt' => date('Y-m-d H:i:s'),
+        ]);
+
+        return $this->respondCreated(['success' => true, 'message' => 'Publication added', 'data' => $model->find($id)]);
+    }
+
+    public function updatePublication($id = null)
+    {
+        $user = $this->request->user ?? null;
+        if (!$user)
+            return $this->fail('Unauthorized', 401);
+
+        if (!$id)
+            return $this->fail('Publication ID is required', 400);
+
+        [$profile, $resp] = $this->getCandidateProfileOrFail($user);
+        if (!$profile)
+            return $resp;
+
+        $model = new \App\Models\CandidatePublication();
+        $existing = $model->where('id', $id)->where('candidateId', $profile['id'])->first();
+        if (!$existing)
+            return $this->failNotFound('Publication not found');
+
+        $data = $this->request->getJSON(true);
+
+        $model->update($id, [
+            'title' => isset($data['title']) ? trim($data['title']) : $existing['title'],
+            'type' => $data['type'] ?? $existing['type'],
+            'journalOrPublisher' => array_key_exists('journalOrPublisher', $data) ? $data['journalOrPublisher'] : $existing['journalOrPublisher'],
+            'year' => $data['year'] ?? $existing['year'],
+            'link' => array_key_exists('link', $data) ? $data['link'] : $existing['link'],
+            'updatedAt' => date('Y-m-d H:i:s'),
+        ]);
+
+        return $this->respond(['success' => true, 'message' => 'Publication updated', 'data' => $model->find($id)]);
+    }
+
+    public function deletePublication($id = null)
+    {
+        $user = $this->request->user ?? null;
+        if (!$user)
+            return $this->fail('Unauthorized', 401);
+        if (!$id)
+            return $this->fail('Publication ID is required', 400);
+
+        [$profile, $resp] = $this->getCandidateProfileOrFail($user);
+        if (!$profile)
+            return $resp;
+
+        $model = new \App\Models\CandidatePublication();
+        $existing = $model->where('id', $id)->where('candidateId', $profile['id'])->first();
+        if (!$existing)
+            return $this->failNotFound('Publication not found');
+
+        $model->delete($id);
+        return $this->respond(['success' => true, 'message' => 'Publication deleted']);
+    }
+
+    public function addMembership()
+    {
+        $user = $this->request->user ?? null;
+        if (!$user)
+            return $this->fail('Unauthorized', 401);
+
+        [$profile, $resp] = $this->getCandidateProfileOrFail($user);
+        if (!$profile)
+            return $resp;
+
+        $data = $this->request->getJSON(true);
+        if (empty(trim($data['bodyName'] ?? '')))
+            return $this->fail('Body name is required', 400);
+
+        $model = new \App\Models\CandidateMembership();
+        $id = uniqid('mem_');
+
+        $model->insert([
+            'id' => $id,
+            'candidateId' => $profile['id'],
+            'bodyName' => trim($data['bodyName']),
+            'membershipNumber' => $data['membershipNumber'] ?? null,
+            'isActive' => isset($data['isActive']) ? (int) !!$data['isActive'] : 1,
+            'goodStanding' => isset($data['goodStanding']) ? (int) !!$data['goodStanding'] : 1,
+            'updatedAt' => date('Y-m-d H:i:s'),
+        ]);
+
+        return $this->respondCreated(['success' => true, 'message' => 'Membership added', 'data' => $model->find($id)]);
+    }
+
+    public function updateMembership($id = null)
+    {
+        $user = $this->request->user ?? null;
+        if (!$user)
+            return $this->fail('Unauthorized', 401);
+        if (!$id)
+            return $this->fail('Membership ID is required', 400);
+
+        [$profile, $resp] = $this->getCandidateProfileOrFail($user);
+        if (!$profile)
+            return $resp;
+
+        $model = new \App\Models\CandidateMembership();
+        $existing = $model->where('id', $id)->where('candidateId', $profile['id'])->first();
+        if (!$existing)
+            return $this->failNotFound('Membership not found');
+
+        $data = $this->request->getJSON(true);
+
+        $model->update($id, [
+            'bodyName' => isset($data['bodyName']) ? trim($data['bodyName']) : $existing['bodyName'],
+            'membershipNumber' => array_key_exists('membershipNumber', $data) ? $data['membershipNumber'] : $existing['membershipNumber'],
+            'isActive' => array_key_exists('isActive', $data) ? (int) !!$data['isActive'] : $existing['isActive'],
+            'goodStanding' => array_key_exists('goodStanding', $data) ? (int) !!$data['goodStanding'] : $existing['goodStanding'],
+            'updatedAt' => date('Y-m-d H:i:s'),
+        ]);
+
+        return $this->respond(['success' => true, 'message' => 'Membership updated', 'data' => $model->find($id)]);
+    }
+
+    public function deleteMembership($id = null)
+    {
+        $user = $this->request->user ?? null;
+        if (!$user)
+            return $this->fail('Unauthorized', 401);
+        if (!$id)
+            return $this->fail('Membership ID is required', 400);
+
+        [$profile, $resp] = $this->getCandidateProfileOrFail($user);
+        if (!$profile)
+            return $resp;
+
+        $model = new \App\Models\CandidateMembership();
+        $existing = $model->where('id', $id)->where('candidateId', $profile['id'])->first();
+        if (!$existing)
+            return $this->failNotFound('Membership not found');
+
+        $model->delete($id);
+        return $this->respond(['success' => true, 'message' => 'Membership deleted']);
+    }
+
+    public function addClearance()
+    {
+        $user = $this->request->user ?? null;
+        if (!$user)
+            return $this->fail('Unauthorized', 401);
+
+        [$profile, $resp] = $this->getCandidateProfileOrFail($user);
+        if (!$profile)
+            return $resp;
+
+        $data = $this->request->getJSON(true);
+
+        if (empty($data['type']))
+            return $this->fail('Type is required', 400);
+        if (empty($data['issueDate']))
+            return $this->fail('Issue date is required', 400);
+
+        $model = new \App\Models\CandidateClearance();
+        $id = uniqid('clr_');
+
+        $model->insert([
+            'id' => $id,
+            'candidateId' => $profile['id'],
+            'type' => $data['type'],
+            'certificateNumber' => $data['certificateNumber'] ?? null,
+            'issueDate' => date('Y-m-d', strtotime($data['issueDate'])),
+            'expiryDate' => !empty($data['expiryDate']) ? date('Y-m-d', strtotime($data['expiryDate'])) : null,
+            'status' => $data['status'] ?? 'PENDING',
+            'updatedAt' => date('Y-m-d H:i:s'),
+        ]);
+
+        return $this->respondCreated(['success' => true, 'message' => 'Clearance added', 'data' => $model->find($id)]);
+    }
+
+    public function updateClearance($id = null)
+    {
+        $user = $this->request->user ?? null;
+        if (!$user)
+            return $this->fail('Unauthorized', 401);
+        if (!$id)
+            return $this->fail('Clearance ID is required', 400);
+
+        [$profile, $resp] = $this->getCandidateProfileOrFail($user);
+        if (!$profile)
+            return $resp;
+
+        $model = new \App\Models\CandidateClearance();
+        $existing = $model->where('id', $id)->where('candidateId', $profile['id'])->first();
+        if (!$existing)
+            return $this->failNotFound('Clearance not found');
+
+        $data = $this->request->getJSON(true);
+
+        $model->update($id, [
+            'type' => $data['type'] ?? $existing['type'],
+            'certificateNumber' => array_key_exists('certificateNumber', $data) ? $data['certificateNumber'] : $existing['certificateNumber'],
+            'issueDate' => array_key_exists('issueDate', $data) ? date('Y-m-d', strtotime($data['issueDate'])) : $existing['issueDate'],
+            'expiryDate' => array_key_exists('expiryDate', $data)
+                ? (!empty($data['expiryDate']) ? date('Y-m-d', strtotime($data['expiryDate'])) : null)
+                : $existing['expiryDate'],
+            'status' => $data['status'] ?? $existing['status'],
+            'updatedAt' => date('Y-m-d H:i:s'),
+        ]);
+
+        return $this->respond(['success' => true, 'message' => 'Clearance updated', 'data' => $model->find($id)]);
+    }
+
+    public function deleteClearance($id = null)
+    {
+        $user = $this->request->user ?? null;
+        if (!$user)
+            return $this->fail('Unauthorized', 401);
+        if (!$id)
+            return $this->fail('Clearance ID is required', 400);
+
+        [$profile, $resp] = $this->getCandidateProfileOrFail($user);
+        if (!$profile)
+            return $resp;
+
+        $model = new \App\Models\CandidateClearance();
+        $existing = $model->where('id', $id)->where('candidateId', $profile['id'])->first();
+        if (!$existing)
+            return $this->failNotFound('Clearance not found');
+
+        $model->delete($id);
+        return $this->respond(['success' => true, 'message' => 'Clearance deleted']);
+    }
+
+    public function addCourse()
+    {
+        $user = $this->request->user ?? null;
+        if (!$user)
+            return $this->fail('Unauthorized', 401);
+
+        [$profile, $resp] = $this->getCandidateProfileOrFail($user);
+        if (!$profile)
+            return $resp;
+
+        $data = $this->request->getJSON(true);
+        if (empty(trim($data['name'] ?? '')))
+            return $this->fail('Course name is required', 400);
+        if (empty(trim($data['institution'] ?? '')))
+            return $this->fail('Institution is required', 400);
+        if (!isset($data['durationWeeks']))
+            return $this->fail('durationWeeks is required', 400);
+        if (empty($data['year']))
+            return $this->fail('year is required', 400);
+
+        $model = new \App\Models\CandidateCourse();
+        $id = uniqid('crs_');
+
+        $model->insert([
+            'id' => $id,
+            'candidateId' => $profile['id'],
+            'name' => trim($data['name']),
+            'institution' => trim($data['institution']),
+            'durationWeeks' => (int) $data['durationWeeks'],
+            'year' => $data['year'],
+            'updatedAt' => date('Y-m-d H:i:s'),
+        ]);
+
+        return $this->respondCreated(['success' => true, 'message' => 'Course added', 'data' => $model->find($id)]);
+    }
+
+    public function updateCourse($id = null)
+    {
+        $user = $this->request->user ?? null;
+        if (!$user)
+            return $this->fail('Unauthorized', 401);
+        if (!$id)
+            return $this->fail('Course ID is required', 400);
+
+        [$profile, $resp] = $this->getCandidateProfileOrFail($user);
+        if (!$profile)
+            return $resp;
+
+        $model = new \App\Models\CandidateCourse();
+        $existing = $model->where('id', $id)->where('candidateId', $profile['id'])->first();
+        if (!$existing)
+            return $this->failNotFound('Course not found');
+
+        $data = $this->request->getJSON(true);
+        $model->update($id, [
+            'name' => isset($data['name']) ? trim($data['name']) : $existing['name'],
+            'institution' => isset($data['institution']) ? trim($data['institution']) : $existing['institution'],
+            'durationWeeks' => array_key_exists('durationWeeks', $data) ? (int) $data['durationWeeks'] : $existing['durationWeeks'],
+            'year' => $data['year'] ?? $existing['year'],
+            'updatedAt' => date('Y-m-d H:i:s'),
+        ]);
+
+        return $this->respond(['success' => true, 'message' => 'Course updated', 'data' => $model->find($id)]);
+    }
+
+    public function deleteCourse($id = null)
+    {
+        $user = $this->request->user ?? null;
+        if (!$user)
+            return $this->fail('Unauthorized', 401);
+        if (!$id)
+            return $this->fail('Course ID is required', 400);
+
+        [$profile, $resp] = $this->getCandidateProfileOrFail($user);
+        if (!$profile)
+            return $resp;
+
+        $model = new \App\Models\CandidateCourse();
+        $existing = $model->where('id', $id)->where('candidateId', $profile['id'])->first();
+        if (!$existing)
+            return $this->failNotFound('Course not found');
+
+        $model->delete($id);
+        return $this->respond(['success' => true, 'message' => 'Course deleted']);
+    }
+
+    public function addReferee()
+    {
+        $user = $this->request->user ?? null;
+        if (!$user)
+            return $this->fail('Unauthorized', 401);
+
+        [$profile, $resp] = $this->getCandidateProfileOrFail($user);
+        if (!$profile)
+            return $resp;
+
+        $data = $this->request->getJSON(true);
+        if (empty(trim($data['name'] ?? '')))
+            return $this->fail('Name is required', 400);
+
+        $model = new \App\Models\CandidateReferee();
+        $id = uniqid('ref_');
+
+        $model->insert([
+            'id' => $id,
+            'candidateId' => $profile['id'],
+            'name' => trim($data['name']),
+            'position' => $data['position'] ?? null,
+            'organization' => $data['organization'] ?? null,
+            'phone' => $data['phone'] ?? null,
+            'email' => $data['email'] ?? null,
+            'updatedAt' => date('Y-m-d H:i:s'),
+        ]);
+
+        return $this->respondCreated(['success' => true, 'message' => 'Referee added', 'data' => $model->find($id)]);
+    }
+
+    public function updateReferee($id = null)
+    {
+        $user = $this->request->user ?? null;
+        if (!$user)
+            return $this->fail('Unauthorized', 401);
+        if (!$id)
+            return $this->fail('Referee ID is required', 400);
+
+        [$profile, $resp] = $this->getCandidateProfileOrFail($user);
+        if (!$profile)
+            return $resp;
+
+        $model = new \App\Models\CandidateReferee();
+        $existing = $model->where('id', $id)->where('candidateId', $profile['id'])->first();
+        if (!$existing)
+            return $this->failNotFound('Referee not found');
+
+        $data = $this->request->getJSON(true);
+
+        $model->update($id, [
+            'name' => isset($data['name']) ? trim($data['name']) : $existing['name'],
+            'position' => array_key_exists('position', $data) ? $data['position'] : $existing['position'],
+            'organization' => array_key_exists('organization', $data) ? $data['organization'] : $existing['organization'],
+            'phone' => array_key_exists('phone', $data) ? $data['phone'] : $existing['phone'],
+            'email' => array_key_exists('email', $data) ? $data['email'] : $existing['email'],
+            'updatedAt' => date('Y-m-d H:i:s'),
+        ]);
+
+        return $this->respond(['success' => true, 'message' => 'Referee updated', 'data' => $model->find($id)]);
+    }
+
+    public function deleteReferee($id = null)
+    {
+        $user = $this->request->user ?? null;
+        if (!$user)
+            return $this->fail('Unauthorized', 401);
+        if (!$id)
+            return $this->fail('Referee ID is required', 400);
+
+        [$profile, $resp] = $this->getCandidateProfileOrFail($user);
+        if (!$profile)
+            return $resp;
+
+        $model = new \App\Models\CandidateReferee();
+        $existing = $model->where('id', $id)->where('candidateId', $profile['id'])->first();
+        if (!$existing)
+            return $this->failNotFound('Referee not found');
+
+        $model->delete($id);
+        return $this->respond(['success' => true, 'message' => 'Referee deleted']);
+    }
+    public function getPersonalInfo()
+    {
+        $user = $this->request->user ?? null;
+        if (!$user)
+            return $this->fail('Unauthorized', 401);
+
+        [$profile, $resp] = $this->getCandidateProfileOrFail($user);
+        if (!$profile)
+            return $resp;
+
+        $model = new \App\Models\CandidatePersonalInfo();
+        $row = $model->where('candidateId', $profile['id'])->first();
+
+        return $this->respond(['success' => true, 'message' => 'Personal info', 'data' => $row ?? []]);
+    }
+    public function upsertPersonalInfo()
+    {
+        $user = $this->request->user ?? null;
+        if (!$user)
+            return $this->fail('Unauthorized', 401);
+
+        [$profile, $resp] = $this->getCandidateProfileOrFail($user);
+        if (!$profile)
+            return $resp;
+
+        $data = $this->request->getJSON(true);
+
+        $required = ['fullName', 'dob', 'gender', 'idNumber', 'nationality', 'countyOfOrigin'];
+        foreach ($required as $f) {
+            if (!isset($data[$f]) || trim((string) $data[$f]) === '') {
+                return $this->fail("$f is required", 400);
+            }
+        }
+
+        // basic gender guard
+        if (!in_array($data['gender'], ['M', 'F', 'Other'], true)) {
+            return $this->fail("gender must be M, F or Other", 400);
+        }
+
+        $model = new \App\Models\CandidatePersonalInfo();
+        $existing = $model->where('candidateId', $profile['id'])->first();
+
+        $payload = [
+            'candidateId' => $profile['id'],
+            'fullName' => trim($data['fullName']),
+            'dob' => date('Y-m-d', strtotime($data['dob'])),
+            'gender' => $data['gender'],
+            'idNumber' => trim($data['idNumber']),
+            'nationality' => trim($data['nationality']),
+            'countyOfOrigin' => trim($data['countyOfOrigin']),
+            'plwd' => isset($data['plwd']) ? (int) !!$data['plwd'] : 0,
+            'updatedAt' => date('Y-m-d H:i:s'),
+        ];
+
+        if ($existing) {
+            $model->update($existing['id'], $payload);
+            $row = $model->find($existing['id']);
+        } else {
+            $id = uniqid('pinfo_');
+            $payload['id'] = $id;
+            $model->insert($payload);
+            $row = $model->find($id);
+        }
+
+        return $this->respond([
+            'success' => true,
+            'message' => 'Personal info saved',
+            'data' => $row
+        ]);
+    }
+
+    public function uploadCandidateFile()
+    {
+        $user = $this->request->user ?? null;
+        if (!$user)
+            return $this->fail('Unauthorized', 401);
+
+        [$profile, $resp] = $this->getCandidateProfileOrFail($user);
+        if (!$profile)
+            return $resp;
+
+        $file = $this->request->getFile('file');
+        if (!$file || !$file->isValid())
+            return $this->fail('No file uploaded', 400);
+
+        $category = $this->request->getPost('category');
+        $title = $this->request->getPost('title');
+
+        $allowedCategories = [
+            'NATIONAL_ID',
+            'CV',
+            'ACADEMIC_CERT',
+            'PROFESSIONAL_CERT',
+            'TESTIMONIAL',
+            'CLEARANCE_CERT',
+            'PUBLICATION_EVIDENCE',
+            'OTHER'
+        ];
+        if (!$category || !in_array($category, $allowedCategories, true)) {
+            return $this->fail('Invalid category', 400);
+        }
+
+        // Limit size
+        $maxBytes = 10 * 1024 * 1024; // 10MB
+        if ($file->getSize() > $maxBytes) {
+            return $this->fail('File exceeds 10MB limit', 400);
+        }
+
+        $uploadPath = WRITEPATH . 'uploads/candidate-files/';
+        if (!is_dir($uploadPath)) {
+            mkdir($uploadPath, 0755, true);
+        }
+
+        // Sanitize name
+        $originalName = $file->getClientName();
+        $pathInfo = pathinfo($originalName);
+        $base = preg_replace('/[^a-zA-Z0-9._-]/', '_', $pathInfo['filename'] ?? 'file');
+        $ext = $pathInfo['extension'] ?? '';
+        $newName = $base . '_' . time() . ($ext ? '.' . $ext : '');
+
+        $file->move($uploadPath, $newName);
+
+        $model = new \App\Models\CandidateFile();
+        $id = uniqid('cfile_');
+
+        $row = [
+            'id' => $id,
+            'candidateId' => $profile['id'],
+            'category' => $category,
+            'title' => $title ? trim($title) : null,
+            'fileName' => $originalName,
+            'fileUrl' => '/uploads/candidate-files/' . $newName,
+            'mimeType' => $file->getClientMimeType(),
+            'fileSize' => $file->getSize(),
+            'updatedAt' => date('Y-m-d H:i:s'),
+        ];
+
+        $model->insert($row);
+
+        return $this->respondCreated([
+            'success' => true,
+            'message' => 'File uploaded',
+            'data' => $model->find($id),
+        ]);
+    }
+
+    public function listCandidateFiles()
+    {
+        $user = $this->request->user ?? null;
+        if (!$user)
+            return $this->fail('Unauthorized', 401);
+
+        [$profile, $resp] = $this->getCandidateProfileOrFail($user);
+        if (!$profile)
+            return $resp;
+
+        $category = $this->request->getGet('category');
+
+        $model = new \App\Models\CandidateFile();
+        $model->where('candidateId', $profile['id']);
+
+        if ($category) {
+            $model->where('category', $category);
+        }
+
+        $rows = $model->orderBy('createdAt', 'DESC')->findAll();
+
+        return $this->respond([
+            'success' => true,
+            'message' => 'Files retrieved',
+            'data' => $rows
+        ]);
+    }
+
+    public function deleteCandidateFile($id = null)
+    {
+        $user = $this->request->user ?? null;
+        if (!$user)
+            return $this->fail('Unauthorized', 401);
+        if (!$id)
+            return $this->fail('File ID is required', 400);
+
+        [$profile, $resp] = $this->getCandidateProfileOrFail($user);
+        if (!$profile)
+            return $resp;
+
+        $model = new \App\Models\CandidateFile();
+        $row = $model->where('id', $id)->where('candidateId', $profile['id'])->first();
+        if (!$row)
+            return $this->failNotFound('File not found');
+
+        // Optionally delete physical file
+        try {
+            $filePath = WRITEPATH . ltrim(str_replace('/uploads/', 'uploads/', $row['fileUrl']), '/');
+            if (is_file($filePath))
+                @unlink($filePath);
+        } catch (\Exception $e) {
+            // ignore file delete errors; DB delete still OK
+        }
+
+        $model->delete($id);
+
+        return $this->respond([
+            'success' => true,
+            'message' => 'File deleted'
+        ]);
+    }
+
 }
