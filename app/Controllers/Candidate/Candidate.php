@@ -46,6 +46,18 @@ class Candidate extends BaseController
         }
         return [$profile, null];
     }
+
+    private function normalizeDegreeLevel(?string $level): ?string
+    {
+        if ($level === null)
+            return null;
+
+        $level = strtoupper(trim($level));
+
+        $allowed = ['CERTIFICATE', 'DIPLOMA', 'BACHELORS', 'MASTERS', 'PHD', 'OTHER'];
+
+        return in_array($level, $allowed, true) ? $level : null;
+    }
     /**
      * Get Profile 
      */
@@ -809,28 +821,47 @@ class Candidate extends BaseController
     public function addEducation()
     {
         $user = $this->request->user ?? null;
-        if (!$user) {
+        if (!$user)
             return $this->fail('Unauthorized', 401);
-        }
 
         $data = $this->request->getJSON(true);
+
         $profileModel = new CandidateProfile();
         $profile = $profileModel->where('userId', $user->id)->first();
-
-        if (!$profile) {
+        if (!$profile)
             return $this->fail('Profile not found', 404);
-        }
 
         try {
-            // Validate dates
-            $startDate = isset($data['startDate']) ? date('Y-m-d', strtotime($data['startDate'])) : null;
-            $endDate = isset($data['endDate']) ? date('Y-m-d', strtotime($data['endDate'])) : null;
-
-            if ($endDate && $startDate && strtotime($endDate) < strtotime($startDate)) {
-                return $this->fail('End date cannot be before start date', 400);
+            // Basic validation
+            if (empty(trim($data['degree'] ?? ''))) {
+                return $this->fail('Degree is required', 400);
+            }
+            if (empty(trim($data['fieldOfStudy'] ?? ''))) {
+                return $this->fail('Field of Study is required', 400);
+            }
+            if (empty(trim($data['institution'] ?? ''))) {
+                return $this->fail('Institution is required', 400);
+            }
+            if (empty($data['startDate'])) {
+                return $this->fail('Start date is required', 400);
             }
 
-            if (isset($data['isCurrent']) && $data['isCurrent'] && $endDate) {
+            // Validate degreeLevel
+            $degreeLevel = $this->normalizeDegreeLevel($data['degreeLevel'] ?? null);
+            if (array_key_exists('degreeLevel', $data) && $degreeLevel === null) {
+                return $this->fail('Invalid degreeLevel. Allowed: CERTIFICATE, DIPLOMA, BACHELORS, MASTERS, PHD, OTHER', 400);
+            }
+
+            // Dates
+            $startDate = date('Y-m-d', strtotime($data['startDate']));
+            $endDate = !empty($data['endDate']) ? date('Y-m-d', strtotime($data['endDate'])) : null;
+
+            $isCurrent = !empty($data['isCurrent']);
+
+            if ($endDate && strtotime($endDate) < strtotime($startDate)) {
+                return $this->fail('End date cannot be before start date', 400);
+            }
+            if ($isCurrent && $endDate) {
                 return $this->fail('Cannot have end date for current education', 400);
             }
 
@@ -838,25 +869,24 @@ class Candidate extends BaseController
             $educationData = [
                 'id' => uniqid('edu_'),
                 'candidateId' => $profile['id'],
-                'degree' => $data['degree'],
-                'fieldOfStudy' => $data['fieldOfStudy'],
-                'institution' => $data['institution'],
-                'location' => $data['location'] ?? null,
+                'degree' => trim($data['degree']),
+                'degreeLevel' => $degreeLevel,
+                'fieldOfStudy' => trim($data['fieldOfStudy']),
+                'institution' => trim($data['institution']),
+                'location' => isset($data['location']) ? trim((string) $data['location']) : null,
                 'startDate' => $startDate,
-                'endDate' => $endDate,
-                'isCurrent' => $data['isCurrent'] ?? false,
-                'grade' => $data['grade'] ?? null,
-                'description' => $data['description'] ?? null
+                'endDate' => $isCurrent ? null : $endDate,
+                'isCurrent' => $isCurrent ? 1 : 0,
+                'grade' => isset($data['grade']) ? trim((string) $data['grade']) : null,
+                'description' => isset($data['description']) ? trim((string) $data['description']) : null,
             ];
-            $educationModel->insert($educationData);
 
-            // Get created education
-            $createdEducation = $educationModel->find($educationData['id']);
+            $educationModel->insert($educationData);
 
             return $this->respondCreated([
                 'success' => true,
                 'message' => 'Education added successfully',
-                'data' => $createdEducation
+                'data' => $educationModel->find($educationData['id'])
             ]);
         } catch (\Exception $e) {
             log_message('error', 'Add education error: ' . $e->getMessage());
@@ -867,6 +897,7 @@ class Candidate extends BaseController
             ], 500);
         }
     }
+
 
     /**
      * @OA\Put(
@@ -883,70 +914,84 @@ class Candidate extends BaseController
         if ($educationId === null) {
             $educationId = $this->request->getUri()->getSegment(4);
         }
-
-        if (!$educationId) {
+        if (!$educationId)
             return $this->fail('Education ID is required', 400);
-        }
 
         $user = $this->request->user ?? null;
-        if (!$user) {
+        if (!$user)
             return $this->fail('Unauthorized', 401);
-        }
 
         try {
             $data = $this->request->getJSON(true);
+
             $profileModel = new CandidateProfile();
             $profile = $profileModel->where('userId', $user->id)->first();
-
-            if (!$profile) {
+            if (!$profile)
                 return $this->failNotFound('Candidate profile not found');
-            }
 
-            // Verify education belongs to this candidate
             $educationModel = new Education();
             $existingEducation = $educationModel->where('id', $educationId)
                 ->where('candidateId', $profile['id'])
                 ->first();
 
-            if (!$existingEducation) {
+            if (!$existingEducation)
                 return $this->failNotFound('Education not found');
+
+            // degreeLevel validation (optional)
+            $degreeLevel = null;
+            if (array_key_exists('degreeLevel', $data)) {
+                $degreeLevel = $this->normalizeDegreeLevel($data['degreeLevel']);
+                if ($degreeLevel === null) {
+                    return $this->fail('Invalid degreeLevel. Allowed: CERTIFICATE, DIPLOMA, BACHELORS, MASTERS, PHD, OTHER', 400);
+                }
             }
 
-            // Validate dates
-            $startDate = isset($data['startDate']) ? date('Y-m-d', strtotime($data['startDate'])) : $existingEducation['startDate'];
-            $endDate = isset($data['endDate']) ? date('Y-m-d', strtotime($data['endDate'])) : $existingEducation['endDate'];
+            // Dates
+            $startDate = array_key_exists('startDate', $data)
+                ? date('Y-m-d', strtotime($data['startDate']))
+                : $existingEducation['startDate'];
 
-            if ($endDate && $startDate && strtotime($endDate) < strtotime($startDate)) {
+            $endDate = array_key_exists('endDate', $data)
+                ? (!empty($data['endDate']) ? date('Y-m-d', strtotime($data['endDate'])) : null)
+                : ($existingEducation['endDate'] ?? null);
+
+            $isCurrent = array_key_exists('isCurrent', $data)
+                ? (int) !!$data['isCurrent']
+                : (int) ($existingEducation['isCurrent'] ?? 0);
+
+            if ($endDate && strtotime($endDate) < strtotime($startDate)) {
                 return $this->fail('End date cannot be before start date', 400);
             }
-
-            if (isset($data['isCurrent']) && $data['isCurrent'] && $endDate) {
+            if ($isCurrent && $endDate) {
                 return $this->fail('Cannot have end date for current education', 400);
             }
 
             $updateData = [
-                'degree' => $data['degree'] ?? $existingEducation['degree'],
-                'fieldOfStudy' => $data['fieldOfStudy'] ?? $existingEducation['fieldOfStudy'],
-                'institution' => $data['institution'] ?? $existingEducation['institution'],
-                'location' => $data['location'] ?? $existingEducation['location'],
+                'degree' => array_key_exists('degree', $data) ? trim((string) $data['degree']) : $existingEducation['degree'],
+                'fieldOfStudy' => array_key_exists('fieldOfStudy', $data) ? trim((string) $data['fieldOfStudy']) : $existingEducation['fieldOfStudy'],
+                'institution' => array_key_exists('institution', $data) ? trim((string) $data['institution']) : $existingEducation['institution'],
+                'location' => array_key_exists('location', $data) ? trim((string) $data['location']) : ($existingEducation['location'] ?? null),
                 'startDate' => $startDate,
-                'endDate' => $endDate,
-                'isCurrent' => $data['isCurrent'] ?? $existingEducation['isCurrent'],
-                'grade' => $data['grade'] ?? $existingEducation['grade'],
-                'description' => $data['description'] ?? $existingEducation['description']
+                'endDate' => $isCurrent ? null : $endDate,
+                'isCurrent' => $isCurrent,
+                'grade' => array_key_exists('grade', $data) ? trim((string) $data['grade']) : ($existingEducation['grade'] ?? null),
+                'description' => array_key_exists('description', $data) ? trim((string) $data['description']) : ($existingEducation['description'] ?? null),
             ];
 
-            $educationModel->update($educationId, $updateData);
+            // Only set if sent
+            if (array_key_exists('degreeLevel', $data)) {
+                $updateData['degreeLevel'] = $degreeLevel;
+            }
 
-            // Get updated education
-            $updatedEducation = $educationModel->find($educationId);
+            $educationModel->update($educationId, $updateData);
 
             return $this->respond([
                 'success' => true,
                 'message' => 'Education updated successfully',
-                'data' => $updatedEducation
+                'data' => $educationModel->find($educationId)
             ]);
         } catch (\Exception $e) {
+            log_message('error', 'Update education error: ' . $e->getMessage());
             return $this->respond([
                 'success' => false,
                 'message' => 'Failed to update education',
@@ -954,6 +999,7 @@ class Candidate extends BaseController
             ], 500);
         }
     }
+
 
     /**
      * @OA\Delete(
