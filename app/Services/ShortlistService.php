@@ -2,183 +2,466 @@
 
 namespace App\Services;
 
-use Config\Database;
 use App\Models\JobShortlistCriteria;
 use App\Models\ShortlistResult;
 use App\Models\Application;
+use CodeIgniter\Database\BaseConnection;
 
 class ShortlistService
 {
-    protected $db;
-    protected $criteriaModel;
-    protected $resultModel;
+    private BaseConnection $db;
+    private JobShortlistCriteria $criteriaModel;
+    private ShortlistResult $resultModel;
+
+    private const CRITERIA_JSON_FIELDS = [
+        'specificCounties',
+        'specificDegreeFields',
+        'specificInstitutions',
+        'specificIndustries',
+        'specificDomains',
+        'specificJobTitles',
+        'requiredSkills',
+        'preferredSkills',
+        'specificLanguages',
+        'specificProfessionalBodies',
+        'requiredCertifications',
+        'preferredCertifications',
+        'specificPublicationTypes',
+        'specificLocations',
+        'customCriteria',
+    ];
+
+    private const RESULT_JSON_FIELDS = [
+        'matchedCriteria',
+        'missedCriteria',
+        'bonusCriteria',
+        'disqualificationReasons',
+    ];
 
     public function __construct()
     {
-        $this->db = Database::connect();
+        $this->db = \Config\Database::connect();
         $this->criteriaModel = new JobShortlistCriteria();
         $this->resultModel = new ShortlistResult();
+        log_message('info', '[ShortlistService] Service initialized');
     }
 
-    /**
-     * Get or create default criteria for a job
-     */
-    public function getJobCriteria(string $jobId): array
+    // =========================================================
+    // ADMIN MANUAL SCORING: EFFECTIVE SCORE
+    // =========================================================
+
+    public function hasManualScores(array $r): bool
     {
-        $criteria = $this->criteriaModel->where('jobId', $jobId)->first();
-        
-        if (!$criteria) {
-            $criteria = [
-                'id' => uniqid('criteria_'),
-                'jobId' => $jobId,
-                'minAge' => null,
-                'maxAge' => null,
-                'requiredGender' => null,
-                'requiredNationality' => null,
-                'specificCounties' => [],
-                'acceptPLWD' => true,
-                'requirePLWD' => false,
-                'requireDoctorate' => false,
-                'requireMasters' => false,
-                'requireBachelors' => false,
-                'specificDegreeFields' => [],
-                'specificInstitutions' => [],
-                'minEducationGrade' => null,
-                'minGeneralExperience' => 0,
-                'maxGeneralExperience' => null,
-                'minSeniorExperience' => 0,
-                'maxSeniorExperience' => null,
-                'specificIndustries' => [],
-                'specificDomains' => [],
-                'requireMNCExperience' => false,
-                'requireStartupExperience' => false,
-                'requireNGOExperience' => false,
-                'requireGovernmentExperience' => false,
-                'specificJobTitles' => [],
-                'requireManagementExperience' => false,
-                'minTeamSizeManaged' => null,
-                'requireCurrentlyEmployed' => false,
-                'excludeCurrentlyEmployed' => false,
-                'requiredSkills' => [],
-                'preferredSkills' => [],
-                'minSkillLevel' => null,
-                'specificLanguages' => [],
-                'minLanguageProficiency' => null,
-                'requireProfessionalMembership' => false,
-                'specificProfessionalBodies' => [],
-                'requireGoodStanding' => false,
-                'requiredCertifications' => [],
-                'preferredCertifications' => [],
-                'requireLeadershipCourse' => false,
-                'minLeadershipCourseDuration' => 4,
-                'minPublications' => 0,
-                'specificPublicationTypes' => [],
-                'requireRecentPublications' => false,
-                'publicationYearsThreshold' => null,
-                'requireTaxClearance' => false,
-                'requireHELBClearance' => false,
-                'requireDCIClearance' => false,
-                'requireCRBClearance' => false,
-                'requireEACCClearance' => false,
-                'requireAllClearancesValid' => false,
-                'maxClearanceAge' => null,
-                'maxExpectedSalary' => null,
-                'minExpectedSalary' => null,
-                'requireImmediateAvailability' => false,
-                'maxNoticePeriod' => null,
-                'acceptRemoteCandidates' => true,
-                'requireOnSiteCandidates' => false,
-                'specificLocations' => [],
-                'requireReferees' => false,
-                'minRefereeCount' => 0,
-                'requireSeniorReferees' => false,
-                'requireAcademicReferees' => false,
-                'requirePortfolio' => false,
-                'requireGitHubProfile' => false,
-                'requireLinkedInProfile' => false,
-                'minPortfolioProjects' => null,
-                'excludeInternalCandidates' => false,
-                'excludePreviousApplicants' => false,
-                'requireDiversityHire' => false,
-                'customCriteria' => [],
-                'educationWeight' => 25,
-                'experienceWeight' => 30,
-                'skillsWeight' => 20,
-                'clearanceWeight' => 15,
-                'professionalWeight' => 10,
-                'isActive' => true,
-                'createdAt' => date('Y-m-d H:i:s'),
-                'updatedAt' => date('Y-m-d H:i:s')
-            ];
-            $this->criteriaModel->insert($criteria);
+        $fields = [
+            'manualTotalScore',
+            'manualEducationScore',
+            'manualExperienceScore',
+            'manualSkillsScore',
+            'manualClearanceScore',
+            'manualProfessionalScore',
+        ];
+
+        foreach ($fields as $f) {
+            if (array_key_exists($f, $r) && $r[$f] !== null && $r[$f] !== '') {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public function getEffectiveCategoryScore(array $r, string $categoryKey): float
+    {
+        $map = [
+            'education' => ['manual' => 'manualEducationScore', 'system' => 'educationScore'],
+            'experience' => ['manual' => 'manualExperienceScore', 'system' => 'experienceScore'],
+            'skills' => ['manual' => 'manualSkillsScore', 'system' => 'skillsScore'],
+            'clearance' => ['manual' => 'manualClearanceScore', 'system' => 'clearanceScore'],
+            'professional' => ['manual' => 'manualProfessionalScore', 'system' => 'professionalScore'],
+        ];
+
+        if (!isset($map[$categoryKey]))
+            return 0.0;
+
+        $m = $map[$categoryKey]['manual'];
+        $s = $map[$categoryKey]['system'];
+
+        if (isset($r[$m]) && $r[$m] !== null && $r[$m] !== '') {
+            return (float) $r[$m];
         }
 
+        return (float) ($r[$s] ?? 0);
+    }
+
+    public function getEffectiveTotalScore(array $r): float
+    {
+        // manual total has highest priority
+        if (isset($r['manualTotalScore']) && $r['manualTotalScore'] !== null && $r['manualTotalScore'] !== '') {
+            return (float) $r['manualTotalScore'];
+        }
+
+        // if any manual category exists, total = sum effective categories
+        if ($this->hasManualScores($r)) {
+            $sum =
+                $this->getEffectiveCategoryScore($r, 'education') +
+                $this->getEffectiveCategoryScore($r, 'experience') +
+                $this->getEffectiveCategoryScore($r, 'skills') +
+                $this->getEffectiveCategoryScore($r, 'clearance') +
+                $this->getEffectiveCategoryScore($r, 'professional');
+
+            return (float) round($sum, 2);
+        }
+
+        // otherwise system totalScore
+        return (float) ($r['totalScore'] ?? 0);
+    }
+
+    public function isEffectivelyDisqualified(array $r): bool
+    {
+        $override = !empty($r['overrideDisqualification']);
+        $disq = !empty($r['hasDisqualifyingFactor']);
+        return $disq && !$override;
+    }
+
+    // =========================================================
+    // CRITERIA: DEFAULTS + NORMALIZATION
+    // =========================================================
+    private function defaultCriteria(string $jobId): array
+    {
+        $now = date('Y-m-d H:i:s');
+        return [
+            'id' => uniqid('criteria_'),
+            'jobId' => $jobId,
+            'minAge' => null,
+            'maxAge' => null,
+            'requiredGender' => null,
+            'requiredNationality' => null,
+            'specificCounties' => [],
+            'acceptPLWD' => true,
+            'requirePLWD' => false,
+            'requireDoctorate' => false,
+            'requireMasters' => false,
+            'requireBachelors' => false,
+            'specificDegreeFields' => [],
+            'specificInstitutions' => [],
+            'minEducationGrade' => null,
+            'minGeneralExperience' => 0,
+            'maxGeneralExperience' => null,
+            'minSeniorExperience' => 0,
+            'maxSeniorExperience' => null,
+            'specificIndustries' => [],
+            'specificDomains' => [],
+            'requireMNCExperience' => false,
+            'requireStartupExperience' => false,
+            'requireNGOExperience' => false,
+            'requireGovernmentExperience' => false,
+            'specificJobTitles' => [],
+            'requireManagementExperience' => false,
+            'minTeamSizeManaged' => null,
+            'requireCurrentlyEmployed' => false,
+            'excludeCurrentlyEmployed' => false,
+            'requiredSkills' => [],
+            'preferredSkills' => [],
+            'minSkillLevel' => null,
+            'specificLanguages' => [],
+            'minLanguageProficiency' => null,
+            'requireProfessionalMembership' => false,
+            'specificProfessionalBodies' => [],
+            'requireGoodStanding' => false,
+            'requiredCertifications' => [],
+            'preferredCertifications' => [],
+            'requireLeadershipCourse' => false,
+            'minLeadershipCourseDuration' => 4,
+            'minPublications' => 0,
+            'specificPublicationTypes' => [],
+            'requireRecentPublications' => false,
+            'publicationYearsThreshold' => null,
+            'requireTaxClearance' => false,
+            'requireHELBClearance' => false,
+
+            // IMPORTANT: keep ONLY one key name consistently
+            'requireDCICClearance' => false,
+
+            'requireCRBClearance' => false,
+            'requireEACCClearance' => false,
+            'requireAllClearancesValid' => false,
+            'maxClearanceAge' => null,
+            'maxExpectedSalary' => null,
+            'minExpectedSalary' => null,
+            'requireImmediateAvailability' => false,
+            'maxNoticePeriod' => null,
+            'acceptRemoteCandidates' => true,
+            'requireOnSiteCandidates' => false,
+            'specificLocations' => [],
+            'requireReferees' => false,
+            'minRefereeCount' => 0,
+            'requireSeniorReferees' => false,
+            'requireAcademicReferees' => false,
+            'requirePortfolio' => false,
+            'requireGitHubProfile' => false,
+            'requireLinkedInProfile' => false,
+            'minPortfolioProjects' => null,
+            'excludeInternalCandidates' => false,
+            'excludePreviousApplicants' => false,
+            'requireDiversityHire' => false,
+            'customCriteria' => [],
+            'educationWeight' => 25,
+            'experienceWeight' => 30,
+            'skillsWeight' => 20,
+            'clearanceWeight' => 15,
+            'professionalWeight' => 10,
+            'isActive' => true,
+            'createdAt' => $now,
+            'updatedAt' => $now,
+        ];
+    }
+
+    private function decodeCriteriaJson(array $criteria): array
+    {
+        foreach (self::CRITERIA_JSON_FIELDS as $field) {
+            if (!array_key_exists($field, $criteria) || $criteria[$field] === null) {
+                $criteria[$field] = [];
+                continue;
+            }
+            if (is_array($criteria[$field]))
+                continue;
+
+            if (is_string($criteria[$field])) {
+                $decoded = json_decode($criteria[$field], true);
+                $criteria[$field] = is_array($decoded) ? $decoded : [];
+                continue;
+            }
+            $criteria[$field] = [];
+        }
         return $criteria;
     }
 
-    /**
-     * Update job shortlist criteria
-     */
+    private function encodeCriteriaJson(array $data): array
+    {
+        foreach (self::CRITERIA_JSON_FIELDS as $field) {
+            if (!array_key_exists($field, $data))
+                continue;
+
+            if ($data[$field] === null) {
+                $data[$field] = json_encode([]);
+                continue;
+            }
+
+            if (is_array($data[$field])) {
+                $data[$field] = json_encode(array_values($data[$field]));
+                continue;
+            }
+
+            if (is_string($data[$field])) {
+                $test = json_decode($data[$field], true);
+                $data[$field] = is_array($test) ? $data[$field] : json_encode([]);
+                continue;
+            }
+
+            $data[$field] = json_encode([]);
+        }
+        return $data;
+    }
+
+    private function normalizeCriteriaTypes(array $data): array
+    {
+        $boolFields = [
+            'acceptPLWD',
+            'requirePLWD',
+            'requireDoctorate',
+            'requireMasters',
+            'requireBachelors',
+            'requireMNCExperience',
+            'requireStartupExperience',
+            'requireNGOExperience',
+            'requireGovernmentExperience',
+            'requireManagementExperience',
+            'requireCurrentlyEmployed',
+            'excludeCurrentlyEmployed',
+            'requireProfessionalMembership',
+            'requireGoodStanding',
+            'requireLeadershipCourse',
+            'requireRecentPublications',
+            'requireTaxClearance',
+            'requireHELBClearance',
+            'requireDCICClearance',
+            'requireCRBClearance',
+            'requireEACCClearance',
+            'requireAllClearancesValid',
+            'requireImmediateAvailability',
+            'acceptRemoteCandidates',
+            'requireOnSiteCandidates',
+            'requireReferees',
+            'requireSeniorReferees',
+            'requireAcademicReferees',
+            'requirePortfolio',
+            'requireGitHubProfile',
+            'requireLinkedInProfile',
+            'excludeInternalCandidates',
+            'excludePreviousApplicants',
+            'requireDiversityHire',
+            'isActive',
+        ];
+
+        foreach ($boolFields as $f) {
+            if (array_key_exists($f, $data))
+                $data[$f] = (bool) $data[$f];
+        }
+
+        $intFields = [
+            'minAge',
+            'maxAge',
+            'minGeneralExperience',
+            'maxGeneralExperience',
+            'minSeniorExperience',
+            'maxSeniorExperience',
+            'minTeamSizeManaged',
+            'minLeadershipCourseDuration',
+            'minPublications',
+            'publicationYearsThreshold',
+            'maxClearanceAge',
+            'maxExpectedSalary',
+            'minExpectedSalary',
+            'maxNoticePeriod',
+            'minRefereeCount',
+            'minPortfolioProjects',
+            'educationWeight',
+            'experienceWeight',
+            'skillsWeight',
+            'clearanceWeight',
+            'professionalWeight',
+        ];
+
+        foreach ($intFields as $f) {
+            if (array_key_exists($f, $data) && $data[$f] !== null && $data[$f] !== '')
+                $data[$f] = (int) $data[$f];
+        }
+
+        return $data;
+    }
+
+    private function normalizeCriteriaForResponse(array $criteria): array
+    {
+        $criteria = $this->decodeCriteriaJson($criteria);
+        $criteria = $this->normalizeCriteriaTypes($criteria);
+        if (empty($criteria['requiredGender']))
+            $criteria['requiredGender'] = null;
+        return $criteria;
+    }
+
+    // =========================================================
+    // PUBLIC: GET / UPDATE CRITERIA
+    // =========================================================
+    public function getJobCriteria(string $jobId): array
+    {
+        $criteria = $this->criteriaModel->where('jobId', $jobId)->first();
+        if (!$criteria) {
+            $criteria = $this->defaultCriteria($jobId);
+            $toInsert = $this->encodeCriteriaJson($criteria);
+            $toInsert = $this->normalizeCriteriaTypes($toInsert);
+            $this->criteriaModel->insert($toInsert);
+            return $this->normalizeCriteriaForResponse($criteria);
+        }
+        return $this->normalizeCriteriaForResponse($criteria);
+    }
+
     public function updateJobCriteria(string $jobId, array $data): bool
     {
         $existing = $this->criteriaModel->where('jobId', $jobId)->first();
+        $data['jobId'] = $jobId;
+        $data['updatedAt'] = date('Y-m-d H:i:s');
+        $data = $this->normalizeCriteriaTypes($data);
+        $data = $this->encodeCriteriaJson($data);
 
         if ($existing) {
-            return $this->criteriaModel->update($existing['id'], $data);
-        } else {
-            $data['id'] = uniqid('criteria_');
-            $data['jobId'] = $jobId;
-            return $this->criteriaModel->insert($data);
+            return (bool) $this->criteriaModel->update($existing['id'], $data);
         }
+
+        $data['id'] = uniqid('criteria_');
+        $data['createdAt'] = $data['createdAt'] ?? date('Y-m-d H:i:s');
+        return (bool) $this->criteriaModel->insert($data);
     }
 
-    /**
-     * Generate shortlist for a job
-     */
+    // =========================================================
+    // STALE DETECTION
+    // =========================================================
+    public function isShortlistStale(string $jobId): array
+    {
+        $criteria = $this->criteriaModel->where('jobId', $jobId)->first();
+        if (!$criteria)
+            return ['isStale' => false, 'reason' => 'No criteria set'];
+
+        $latestResult = $this->db->table('shortlist_results')
+            ->where('jobId', $jobId)
+            ->orderBy('updatedAt', 'DESC')
+            ->limit(1)
+            ->get()
+            ->getRowArray();
+
+        if (!$latestResult)
+            return ['isStale' => true, 'reason' => 'No shortlist generated yet'];
+
+        if (strtotime($criteria['updatedAt']) > strtotime($latestResult['updatedAt'])) {
+            return [
+                'isStale' => true,
+                'reason' => 'Criteria updated after last generation',
+                'criteriaUpdatedAt' => $criteria['updatedAt'],
+                'shortlistGeneratedAt' => $latestResult['updatedAt']
+            ];
+        }
+
+        return ['isStale' => false, 'reason' => 'Results are current'];
+    }
+
+    // =========================================================
+    // SHORTLIST GENERATION
+    // =========================================================
     public function generateShortlist(string $jobId): array
     {
         $criteria = $this->getJobCriteria($jobId);
 
         $applicationModel = new Application();
         $applications = $applicationModel->where('jobId', $jobId)->findAll();
-
         if (empty($applications)) {
             return ['success' => false, 'message' => 'No applications found', 'count' => 0];
         }
 
         $results = [];
+        $generationTimestamp = date('Y-m-d H:i:s');
 
         foreach ($applications as $app) {
             $candidateId = $app['candidateId'];
-            
+
             $profile = $this->db->table('candidate_profiles')
                 ->where('userId', $candidateId)
-                ->get()->getRowArray();
+                ->get()
+                ->getRowArray();
 
-            if (!$profile) continue;
+            if (!$profile)
+                continue;
 
             $profileId = $profile['id'];
-
-            // Score candidate
             $score = $this->scoreCandidate($profileId, $candidateId, $app, $criteria);
 
-            // Save result
             $resultData = [
                 'jobId' => $jobId,
                 'applicationId' => $app['id'],
                 'candidateId' => $candidateId,
+
+                // system scores only
                 'totalScore' => $score['totalScore'],
                 'educationScore' => $score['educationScore'],
                 'experienceScore' => $score['experienceScore'],
                 'skillsScore' => $score['skillsScore'],
                 'clearanceScore' => $score['clearanceScore'],
                 'professionalScore' => $score['professionalScore'],
-                'matchedCriteria' => $score['matched'],
-                'missedCriteria' => $score['missed'],
-                'bonusCriteria' => $score['bonus'],
-                'hasAllMandatory' => $score['hasAllMandatory'],
-                'hasDisqualifyingFactor' => $score['hasDisqualifyingFactor'],
-                'disqualificationReasons' => $score['disqualificationReasons']
+
+                'matchedCriteria' => json_encode($score['matched']),
+                'missedCriteria' => json_encode($score['missed']),
+                'bonusCriteria' => json_encode($score['bonus']),
+                'hasAllMandatory' => (bool) $score['hasAllMandatory'],
+                'hasDisqualifyingFactor' => (bool) $score['hasDisqualifyingFactor'],
+                'disqualificationReasons' => json_encode($score['disqualificationReasons']),
+                'updatedAt' => $generationTimestamp,
             ];
 
             $existing = $this->resultModel
@@ -187,29 +470,44 @@ class ShortlistService
                 ->first();
 
             if ($existing) {
+                // Do not clear manual overrides; update only system fields
                 $this->resultModel->update($existing['id'], $resultData);
             } else {
                 $resultData['id'] = uniqid('shortlist_');
+                $resultData['createdAt'] = $generationTimestamp;
                 $this->resultModel->insert($resultData);
             }
 
-            $results[] = $resultData;
+            $results[] = [
+                ...$resultData,
+                'matchedCriteria' => $score['matched'],
+                'missedCriteria' => $score['missed'],
+                'bonusCriteria' => $score['bonus'],
+                'disqualificationReasons' => $score['disqualificationReasons'],
+            ];
         }
 
-        // Calculate ranks and percentiles
+        // IMPORTANT: rank using effective score (manual overrides included)
         $this->calculateRanks($jobId);
 
         return [
             'success' => true,
             'message' => 'Shortlist generated successfully',
             'count' => count($results),
-            'results' => $results
+            'results' => $results,
+            'generatedAt' => $generationTimestamp
         ];
     }
 
-    /**
-     * MAIN SCORING ENGINE
-     */
+    // Used after admin scoring update
+    public function rerank(string $jobId): void
+    {
+        $this->calculateRanks($jobId);
+    }
+
+    // =========================================================
+    // MAIN SCORING ENGINE (UNCHANGED)
+    // =========================================================
     protected function scoreCandidate(string $profileId, string $userId, array $application, array $criteria): array
     {
         $score = [
@@ -224,10 +522,9 @@ class ShortlistService
             'bonus' => [],
             'hasAllMandatory' => true,
             'hasDisqualifyingFactor' => false,
-            'disqualificationReasons' => []
+            'disqualificationReasons' => [],
         ];
 
-        // Get all candidate data
         $personalInfo = $this->db->table('candidate_personal_info')->where('candidateId', $profileId)->get()->getRowArray();
         $educations = $this->db->table('educations')->where('candidateId', $profileId)->get()->getResultArray();
         $experiences = $this->db->table('experiences')->where('candidateId', $profileId)->get()->getResultArray();
@@ -240,105 +537,94 @@ class ShortlistService
         $candidateSkills = $this->db->table('candidate_skills')->where('candidateId', $profileId)->get()->getResultArray();
         $profile = $this->db->table('candidate_profiles')->where('id', $profileId)->get()->getRowArray();
 
-        // ========================================
-        // 1. PERSONAL INFO FILTERS (DISQUALIFYING)
-        // ========================================
         $this->evaluatePersonalInfo($personalInfo, $application, $criteria, $score);
+        if ($score['hasDisqualifyingFactor']) {
+            $score['totalScore'] = 0;
+            return $score;
+        }
 
-        // ========================================
-        // 2. EDUCATION SCORING
-        // ========================================
-        $this->evaluateEducation($educations, $criteria, $score, $criteria['educationWeight']);
+        $this->evaluateEducation($educations, $criteria, $score, (int) ($criteria['educationWeight'] ?? 0));
+        $this->evaluateExperience($experiences, $profile, $userId, $criteria, $score, (int) ($criteria['experienceWeight'] ?? 0));
+        $this->evaluateSkills($candidateSkills, $criteria, $score, (int) ($criteria['skillsWeight'] ?? 0));
+        $this->evaluateClearances($clearances, $criteria, $score, (int) ($criteria['clearanceWeight'] ?? 0));
+        $this->evaluateProfessional(
+            $memberships,
+            $certifications,
+            $courses,
+            $publications,
+            $referees,
+            $profile,
+            $criteria,
+            $score,
+            (int) ($criteria['professionalWeight'] ?? 0)
+        );
 
-        // ========================================
-        // 3. EXPERIENCE SCORING
-        // ========================================
-        $this->evaluateExperience($experiences, $profile, $criteria, $score, $criteria['experienceWeight']);
-
-        // ========================================
-        // 4. SKILLS SCORING
-        // ========================================
-        $this->evaluateSkills($candidateSkills, $criteria, $score, $criteria['skillsWeight']);
-
-        // ========================================
-        // 5. CLEARANCE SCORING
-        // ========================================
-        $this->evaluateClearances($clearances, $criteria, $score, $criteria['clearanceWeight']);
-
-        // ========================================
-        // 6. PROFESSIONAL SCORING
-        // ========================================
-        $this->evaluateProfessional($memberships, $certifications, $courses, $publications, $referees, $profile, $criteria, $score, $criteria['professionalWeight']);
-
-        // Calculate total score
         $score['totalScore'] = round(
-            $score['educationScore'] + 
-            $score['experienceScore'] + 
-            $score['skillsScore'] + 
-            $score['clearanceScore'] + 
-            $score['professionalScore'],
+            $score['educationScore'] + $score['experienceScore'] + $score['skillsScore'] + $score['clearanceScore'] + $score['professionalScore'],
             2
         );
 
         return $score;
     }
 
-    /**
-     * Personal Info Evaluation (Age, Gender, Nationality, Location, PLWD)
-     */
+    // =========================================================
+    // EVALUATION METHODS
+    // =========================================================
+
     protected function evaluatePersonalInfo(?array $personalInfo, array $application, array $criteria, array &$score): void
     {
-        // Age Check
         if (!empty($criteria['minAge']) || !empty($criteria['maxAge'])) {
             $age = null;
             if (!empty($personalInfo['dob'])) {
                 try {
                     $dob = new \DateTime($personalInfo['dob']);
                     $age = (new \DateTime())->diff($dob)->y;
-                } catch (\Exception $e) {}
+                } catch (\Exception $e) {
+                }
             }
-
             if ($age !== null) {
                 $ageOk = true;
+                $ageReason = [];
                 if (!empty($criteria['minAge']) && $age < $criteria['minAge']) {
                     $ageOk = false;
+                    $ageReason[] = "below minimum ({$criteria['minAge']})";
                 }
                 if (!empty($criteria['maxAge']) && $age > $criteria['maxAge']) {
                     $ageOk = false;
+                    $ageReason[] = "above maximum ({$criteria['maxAge']})";
                 }
-
                 if ($ageOk) {
-                    $score['matched'][] = "Age: {$age} years";
+                    $score['matched'][] = "Age: {$age} years (within " . ($criteria['minAge'] ?? 'any') . "-" . ($criteria['maxAge'] ?? 'any') . ")";
                 } else {
                     $score['hasDisqualifyingFactor'] = true;
-                    $score['disqualificationReasons'][] = "Age {$age} outside range ({$criteria['minAge']}-{$criteria['maxAge']})";
+                    $score['disqualificationReasons'][] = "Age {$age} is " . implode(' and ', $ageReason);
+                    return;
                 }
             }
         }
 
-        // Gender Check
         if (!empty($criteria['requiredGender']) && $criteria['requiredGender'] !== 'ANY') {
             $gender = strtoupper($personalInfo['gender'] ?? '');
             if ($gender === strtoupper($criteria['requiredGender'])) {
                 $score['matched'][] = "Gender: {$criteria['requiredGender']}";
             } else {
                 $score['hasDisqualifyingFactor'] = true;
-                $score['disqualificationReasons'][] = "Gender mismatch (required: {$criteria['requiredGender']})";
+                $score['disqualificationReasons'][] = "Gender mismatch (required: {$criteria['requiredGender']}, got: {$gender})";
+                return;
             }
         }
 
-        // Nationality Check
         if (!empty($criteria['requiredNationality']) && $criteria['requiredNationality'] !== 'ANY') {
             $nationality = $personalInfo['nationality'] ?? '';
             if (stripos($nationality, $criteria['requiredNationality']) !== false) {
                 $score['matched'][] = "Nationality: {$criteria['requiredNationality']}";
             } else {
                 $score['hasDisqualifyingFactor'] = true;
-                $score['disqualificationReasons'][] = "Nationality mismatch (required: {$criteria['requiredNationality']})";
+                $score['disqualificationReasons'][] = "Nationality mismatch (required: {$criteria['requiredNationality']}, got: {$nationality})";
+                return;
             }
         }
 
-        // County Check
         if (!empty($criteria['specificCounties']) && is_array($criteria['specificCounties']) && count($criteria['specificCounties']) > 0) {
             $county = $personalInfo['countyOfOrigin'] ?? '';
             $countyMatch = false;
@@ -348,111 +634,108 @@ class ShortlistService
                     break;
                 }
             }
-
-            if ($countyMatch) {
+            if ($countyMatch)
                 $score['matched'][] = "County: {$county}";
-            } else {
+            else
                 $score['missed'][] = "County not in: " . implode(', ', $criteria['specificCounties']);
-            }
         }
 
-        // PLWD Check
         $isPLWD = !empty($personalInfo['plwd']);
-        if ($criteria['requirePLWD'] && !$isPLWD) {
+        if (!empty($criteria['requirePLWD']) && !$isPLWD) {
             $score['hasDisqualifyingFactor'] = true;
             $score['disqualificationReasons'][] = "Person with disability required";
-        } elseif (!$criteria['acceptPLWD'] && $isPLWD) {
+            return;
+        } elseif (isset($criteria['acceptPLWD']) && !$criteria['acceptPLWD'] && $isPLWD) {
             $score['hasDisqualifyingFactor'] = true;
             $score['disqualificationReasons'][] = "PLWD not accepted for this role";
+            return;
         } elseif ($isPLWD) {
             $score['bonus'][] = "Person with disability";
         }
 
-        // Salary Check
         if (!empty($criteria['maxExpectedSalary'])) {
-            $expectedSalary = (float)($application['expectedSalary'] ?? 0);
+            $expectedSalary = (float) ($application['expectedSalary'] ?? 0);
             if ($expectedSalary > 0) {
-                if ($expectedSalary <= $criteria['maxExpectedSalary']) {
-                    $score['matched'][] = "Expected salary within budget";
-                } else {
-                    $score['missed'][] = "Expected salary exceeds budget";
-                }
+                if ($expectedSalary <= $criteria['maxExpectedSalary'])
+                    $score['matched'][] = "Expected salary within budget (KES " . number_format($expectedSalary) . ")";
+                else
+                    $score['missed'][] = "Expected salary exceeds budget (KES " . number_format($expectedSalary) . " > KES " . number_format($criteria['maxExpectedSalary']) . ")";
             }
         }
-
         if (!empty($criteria['minExpectedSalary'])) {
-            $expectedSalary = (float)($application['expectedSalary'] ?? 0);
+            $expectedSalary = (float) ($application['expectedSalary'] ?? 0);
             if ($expectedSalary > 0 && $expectedSalary >= $criteria['minExpectedSalary']) {
-                $score['matched'][] = "Expected salary meets minimum";
+                $score['matched'][] = "Expected salary meets minimum (KES " . number_format($expectedSalary) . ")";
             }
         }
     }
 
-    /**
-     * Education Evaluation
-     */
     protected function evaluateEducation(array $educations, array $criteria, array &$score, int $weight): void
     {
-        if ($weight == 0) return;
+        if ($weight === 0)
+            return;
 
         $points = 0;
         $maxPoints = 0;
-
         $hasDoctorate = false;
         $hasMasters = false;
         $hasBachelors = false;
 
         foreach ($educations as $edu) {
             $degree = strtoupper($edu['degree'] ?? '');
-            if (strpos($degree, 'PHD') !== false || strpos($degree, 'DOCTOR') !== false) {
+            if (strpos($degree, 'PHD') !== false || strpos($degree, 'DOCTOR') !== false)
                 $hasDoctorate = true;
-            } elseif (strpos($degree, 'MASTER') !== false || strpos($degree, 'MSC') !== false || strpos($degree, 'MBA') !== false) {
+            elseif (strpos($degree, 'MASTER') !== false || strpos($degree, 'MSC') !== false || strpos($degree, 'MBA') !== false)
                 $hasMasters = true;
-            } elseif (strpos($degree, 'BACHELOR') !== false || strpos($degree, 'BSC') !== false || strpos($degree, 'BA') !== false) {
+            elseif (strpos($degree, 'BACHELOR') !== false || strpos($degree, 'BSC') !== false || strpos($degree, 'BA') !== false)
                 $hasBachelors = true;
-            }
         }
 
-        if ($criteria['requireDoctorate']) {
+        if (!empty($criteria['requireDoctorate'])) {
             $maxPoints += 40;
             if ($hasDoctorate) {
                 $points += 40;
                 $score['matched'][] = "Doctorate degree";
             } else {
-                $score['missed'][] = "Doctorate degree (REQUIRED)";
+                $score['hasDisqualifyingFactor'] = true;
+                $score['disqualificationReasons'][] = "Doctorate degree required";
                 $score['hasAllMandatory'] = false;
+                return;
             }
         } elseif ($hasDoctorate) {
             $score['bonus'][] = "Doctorate degree (exceeds requirements)";
-            $points += 10; // Bonus
+            $points += 10;
         }
 
-        if ($criteria['requireMasters']) {
+        if (!empty($criteria['requireMasters'])) {
             $maxPoints += 30;
             if ($hasMasters) {
                 $points += 30;
                 $score['matched'][] = "Masters degree";
             } else {
-                $score['missed'][] = "Masters degree (REQUIRED)";
+                $score['hasDisqualifyingFactor'] = true;
+                $score['disqualificationReasons'][] = "Masters degree required";
                 $score['hasAllMandatory'] = false;
+                return;
             }
         } elseif ($hasMasters && !$hasDoctorate) {
             $score['bonus'][] = "Masters degree (exceeds requirements)";
             $points += 8;
         }
 
-        if ($criteria['requireBachelors']) {
+        if (!empty($criteria['requireBachelors'])) {
             $maxPoints += 30;
             if ($hasBachelors) {
                 $points += 30;
                 $score['matched'][] = "Bachelors degree";
             } else {
-                $score['missed'][] = "Bachelors degree (REQUIRED)";
+                $score['hasDisqualifyingFactor'] = true;
+                $score['disqualificationReasons'][] = "Bachelors degree required";
                 $score['hasAllMandatory'] = false;
+                return;
             }
         }
 
-        // Specific fields check
         if (!empty($criteria['specificDegreeFields']) && is_array($criteria['specificDegreeFields']) && count($criteria['specificDegreeFields']) > 0) {
             $fieldMatch = false;
             foreach ($educations as $edu) {
@@ -465,12 +748,10 @@ class ShortlistService
                     }
                 }
             }
-            if (!$fieldMatch) {
+            if (!$fieldMatch)
                 $score['missed'][] = "Degree field not in: " . implode(', ', $criteria['specificDegreeFields']);
-            }
         }
 
-        // Institutions check
         if (!empty($criteria['specificInstitutions']) && is_array($criteria['specificInstitutions']) && count($criteria['specificInstitutions']) > 0) {
             $instMatch = false;
             foreach ($educations as $edu) {
@@ -483,76 +764,102 @@ class ShortlistService
                     }
                 }
             }
-            if (!$instMatch) {
+            if (!$instMatch)
                 $score['missed'][] = "Institution not in: " . implode(', ', $criteria['specificInstitutions']);
+        }
+
+        if ($maxPoints > 0)
+            $score['educationScore'] = round(($points / $maxPoints) * $weight, 2);
+        else
+            $score['educationScore'] = $hasBachelors ? $weight * 0.5 : 0;
+    }
+
+    protected function getGeneralExperience(string $candidateId): int
+    {
+        $experiences = $this->db->table('experiences')
+            ->where('candidateId', $candidateId)
+            ->get()
+            ->getResultArray();
+
+        if (empty($experiences))
+            return 0;
+
+        $totalMonths = 0;
+        foreach ($experiences as $exp) {
+            if (empty($exp['startDate']))
+                continue;
+
+            try {
+                $start = new \DateTime($exp['startDate']);
+                if (!empty($exp['isCurrent']))
+                    $end = new \DateTime();
+                elseif (!empty($exp['endDate']))
+                    $end = new \DateTime($exp['endDate']);
+                else
+                    continue;
+
+                $interval = $start->diff($end);
+                $monthsThisExp = ($interval->y * 12) + $interval->m;
+                $totalMonths += $monthsThisExp;
+            } catch (\Exception $e) {
+                continue;
             }
         }
 
-        // Normalize to weight
-        if ($maxPoints > 0) {
-            $score['educationScore'] = round(($points / $maxPoints) * $weight, 2);
-        } else {
-            $score['educationScore'] = $hasBachelors ? $weight * 0.5 : 0;
-        }
+        return (int) floor($totalMonths / 12);
     }
 
-    /**
-     * Experience Evaluation
-     */
-    protected function evaluateExperience(array $experiences, array $profile, array $criteria, array &$score, int $weight): void
+    protected function evaluateExperience(array $experiences, array $profile, string $userId, array $criteria, array &$score, int $weight): void
     {
-        if ($weight == 0) return;
+        if ($weight === 0)
+            return;
 
         $points = 0;
         $maxPoints = 0;
 
-        $generalExp = (int)($profile['experienceYears'] ?? 0);
+        $generalExp = $this->getGeneralExperience($profile['id']);
 
-        // General Experience
         if (!empty($criteria['minGeneralExperience'])) {
             $maxPoints += 30;
             if ($generalExp >= $criteria['minGeneralExperience']) {
                 $points += 30;
                 $score['matched'][] = "General experience: {$generalExp} years (min: {$criteria['minGeneralExperience']})";
             } else {
-                $score['missed'][] = "General experience: {$generalExp} years (min: {$criteria['minGeneralExperience']}) - REQUIRED";
-                $score['hasAllMandatory'] = false;
+                $score['hasDisqualifyingFactor'] = true;
+                $score['disqualificationReasons'][] = "General experience: {$generalExp} years (min: {$criteria['minGeneralExperience']}) - REQUIRED";
+                return;
             }
         }
 
-        if (!empty($criteria['maxGeneralExperience'])) {
-            if ($generalExp > $criteria['maxGeneralExperience']) {
-                $score['missed'][] = "Experience exceeds maximum ({$criteria['maxGeneralExperience']} years)";
-            }
+        if (!empty($criteria['maxGeneralExperience']) && $generalExp > $criteria['maxGeneralExperience']) {
+            $score['hasDisqualifyingFactor'] = true;
+            $score['disqualificationReasons'][] = "Experience exceeds maximum ({$criteria['maxGeneralExperience']} years, got {$generalExp})";
+            return;
         }
 
-        // Senior Experience
         $seniorYears = $this->calculateSeniorExperience($experiences);
+
         if (!empty($criteria['minSeniorExperience'])) {
             $maxPoints += 30;
             if ($seniorYears >= $criteria['minSeniorExperience']) {
                 $points += 30;
                 $score['matched'][] = "Senior experience: {$seniorYears} years (min: {$criteria['minSeniorExperience']})";
             } else {
-                $score['missed'][] = "Senior experience: {$seniorYears} years (min: {$criteria['minSeniorExperience']}) - REQUIRED";
-                $score['hasAllMandatory'] = false;
+                $score['missed'][] = "Senior experience: {$seniorYears} years (min: {$criteria['minSeniorExperience']})";
             }
         }
 
-        // Management Experience
-        if ($criteria['requireManagementExperience']) {
+        if (!empty($criteria['requireManagementExperience'])) {
             $hasManagement = $this->hasManagementExperience($experiences);
             $maxPoints += 20;
             if ($hasManagement) {
                 $points += 20;
                 $score['matched'][] = "Management experience";
             } else {
-                $score['missed'][] = "Management experience - REQUIRED";
-                $score['hasAllMandatory'] = false;
+                $score['missed'][] = "Management experience";
             }
         }
 
-        // Current Employment Status
         $currentlyEmployed = false;
         foreach ($experiences as $exp) {
             if (!empty($exp['isCurrent'])) {
@@ -561,55 +868,57 @@ class ShortlistService
             }
         }
 
-        if ($criteria['requireCurrentlyEmployed'] && !$currentlyEmployed) {
-            $score['missed'][] = "Currently employed - REQUIRED";
-            $score['hasAllMandatory'] = false;
+        if (!empty($criteria['requireCurrentlyEmployed']) && !$currentlyEmployed) {
+            $score['missed'][] = "Currently employed";
         }
 
-        if ($criteria['excludeCurrentlyEmployed'] && $currentlyEmployed) {
+        if (!empty($criteria['excludeCurrentlyEmployed']) && $currentlyEmployed) {
             $score['hasDisqualifyingFactor'] = true;
             $score['disqualificationReasons'][] = "Currently employed candidates excluded";
+            return;
         }
 
-        // Company Types (MNC, Startup, NGO, Government)
         $companyTypes = $this->detectCompanyTypes($experiences);
-        if ($criteria['requireMNCExperience'] && !$companyTypes['mnc']) {
+
+        if (!empty($criteria['requireMNCExperience']) && !$companyTypes['mnc'])
             $score['missed'][] = "MNC experience";
-        } elseif ($companyTypes['mnc']) {
+        elseif (!empty($criteria['requireMNCExperience']) && $companyTypes['mnc'])
             $score['matched'][] = "MNC experience";
-        }
 
-        if ($criteria['requireStartupExperience'] && !$companyTypes['startup']) {
+        if (!empty($criteria['requireStartupExperience']) && !$companyTypes['startup'])
             $score['missed'][] = "Startup experience";
-        } elseif ($companyTypes['startup']) {
+        elseif (!empty($criteria['requireStartupExperience']) && $companyTypes['startup'])
             $score['matched'][] = "Startup experience";
-        }
 
-        // Normalize
-        if ($maxPoints > 0) {
+        if (!empty($criteria['requireNGOExperience']) && !$companyTypes['ngo'])
+            $score['missed'][] = "NGO experience";
+        elseif (!empty($criteria['requireNGOExperience']) && $companyTypes['ngo'])
+            $score['matched'][] = "NGO experience";
+
+        if (!empty($criteria['requireGovernmentExperience']) && !$companyTypes['government'])
+            $score['missed'][] = "Government experience";
+        elseif (!empty($criteria['requireGovernmentExperience']) && $companyTypes['government'])
+            $score['matched'][] = "Government experience";
+
+        if ($maxPoints > 0)
             $score['experienceScore'] = round(($points / $maxPoints) * $weight, 2);
-        } else {
+        else
             $score['experienceScore'] = $generalExp > 0 ? $weight * 0.5 : 0;
-        }
     }
 
-    /**
-     * Skills Evaluation
-     */
     protected function evaluateSkills(array $candidateSkills, array $criteria, array &$score, int $weight): void
     {
-        if ($weight == 0) return;
+        if ($weight === 0)
+            return;
 
         $points = 0;
         $maxPoints = 0;
 
         $candidateSkillIds = array_column($candidateSkills, 'skillId');
 
-        // Required Skills (MUST have ALL)
         if (!empty($criteria['requiredSkills']) && is_array($criteria['requiredSkills']) && count($criteria['requiredSkills']) > 0) {
             $maxPoints += 60;
             $matchedCount = 0;
-
             foreach ($criteria['requiredSkills'] as $reqSkillId) {
                 if (in_array($reqSkillId, $candidateSkillIds)) {
                     $matchedCount++;
@@ -617,19 +926,15 @@ class ShortlistService
                     $score['matched'][] = "Required skill: {$skillName}";
                 } else {
                     $skillName = $this->getSkillName($reqSkillId);
-                    $score['missed'][] = "Required skill: {$skillName} - MISSING";
-                    $score['hasAllMandatory'] = false;
+                    $score['missed'][] = "Required skill: {$skillName}";
                 }
             }
-
             $points += ($matchedCount / count($criteria['requiredSkills'])) * 60;
         }
 
-        // Preferred Skills (Bonus)
         if (!empty($criteria['preferredSkills']) && is_array($criteria['preferredSkills']) && count($criteria['preferredSkills']) > 0) {
             $maxPoints += 40;
             $matchedCount = 0;
-
             foreach ($criteria['preferredSkills'] as $prefSkillId) {
                 if (in_array($prefSkillId, $candidateSkillIds)) {
                     $matchedCount++;
@@ -637,24 +942,19 @@ class ShortlistService
                     $score['bonus'][] = "Preferred skill: {$skillName}";
                 }
             }
-
             $points += ($matchedCount / count($criteria['preferredSkills'])) * 40;
         }
 
-        // Normalize
-        if ($maxPoints > 0) {
+        if ($maxPoints > 0)
             $score['skillsScore'] = round(($points / $maxPoints) * $weight, 2);
-        } else {
+        else
             $score['skillsScore'] = count($candidateSkills) > 0 ? $weight * 0.5 : 0;
-        }
     }
 
-    /**
-     * Clearances Evaluation
-     */
     protected function evaluateClearances(array $clearances, array $criteria, array &$score, int $weight): void
     {
-        if ($weight == 0) return;
+        if ($weight === 0)
+            return;
 
         $points = 0;
         $maxPoints = 0;
@@ -669,54 +969,57 @@ class ShortlistService
         $clearanceTypes = [
             'requireTaxClearance' => 'Tax',
             'requireHELBClearance' => 'HELB',
-            'requireDCIClearance' => 'DCI',
+            'requireDCICClearance' => 'DCI',
             'requireCRBClearance' => 'CRB',
-            'requireEACCClearance' => 'EACC'
+            'requireEACCClearance' => 'EACC',
         ];
 
         foreach ($clearanceTypes as $criteriaKey => $clearanceType) {
-            if ($criteria[$criteriaKey]) {
+            if (!empty($criteria[$criteriaKey])) {
                 $maxPoints += 20;
                 if (isset($clearanceMap[$clearanceType])) {
                     $points += 20;
                     $score['matched'][] = "{$clearanceType} clearance";
                 } else {
-                    $score['missed'][] = "{$clearanceType} clearance - REQUIRED";
-                    $score['hasAllMandatory'] = false;
+                    $score['missed'][] = "{$clearanceType} clearance";
                 }
             }
         }
 
-        if ($maxPoints > 0) {
+        if ($maxPoints > 0)
             $score['clearanceScore'] = round(($points / $maxPoints) * $weight, 2);
-        } else {
+        else
             $score['clearanceScore'] = $weight * 0.5;
-        }
     }
 
-    /**
-     * Professional Evaluation
-     */
-    protected function evaluateProfessional(array $memberships, array $certifications, array $courses, array $publications, array $referees, array $profile, array $criteria, array &$score, int $weight): void
-    {
-        if ($weight == 0) return;
+    protected function evaluateProfessional(
+        array $memberships,
+        array $certifications,
+        array $courses,
+        array $publications,
+        array $referees,
+        array $profile,
+        array $criteria,
+        array &$score,
+        int $weight
+    ): void {
+        if ($weight === 0)
+            return;
 
         $points = 0;
         $maxPoints = 0;
 
-        // Memberships
-        if ($criteria['requireProfessionalMembership']) {
+        if (!empty($criteria['requireProfessionalMembership'])) {
             $maxPoints += 20;
             if (count($memberships) > 0) {
                 $points += 20;
                 $score['matched'][] = "Professional membership";
             } else {
-                $score['missed'][] = "Professional membership - REQUIRED";
-                $score['hasAllMandatory'] = false;
+                $score['missed'][] = "Professional membership";
             }
         }
 
-        if ($criteria['requireGoodStanding']) {
+        if (!empty($criteria['requireGoodStanding'])) {
             $maxPoints += 15;
             $hasGoodStanding = false;
             foreach ($memberships as $mem) {
@@ -725,17 +1028,14 @@ class ShortlistService
                     break;
                 }
             }
-
             if ($hasGoodStanding) {
                 $points += 15;
                 $score['matched'][] = "Good standing";
             } else {
-                $score['missed'][] = "Good standing - REQUIRED";
-                $score['hasAllMandatory'] = false;
+                $score['missed'][] = "Good standing";
             }
         }
 
-        // Certifications
         if (!empty($criteria['requiredCertifications']) && is_array($criteria['requiredCertifications']) && count($criteria['requiredCertifications']) > 0) {
             $maxPoints += 25;
             $certNames = array_map('strtolower', array_column($certifications, 'name'));
@@ -749,26 +1049,25 @@ class ShortlistService
                         break;
                     }
                 }
-
                 if ($found) {
                     $matchedCount++;
                     $score['matched'][] = "Certification: {$reqCert}";
                 } else {
-                    $score['missed'][] = "Certification: {$reqCert} - REQUIRED";
-                    $score['hasAllMandatory'] = false;
+                    $score['missed'][] = "Certification: {$reqCert}";
                 }
             }
 
             $points += ($matchedCount / count($criteria['requiredCertifications'])) * 25;
         }
 
-        // Leadership Course
-        if ($criteria['requireLeadershipCourse']) {
+        if (!empty($criteria['requireLeadershipCourse'])) {
             $maxPoints += 15;
+            $minWeeks = (int) ($criteria['minLeadershipCourseDuration'] ?? 4);
             $hasLeadershipCourse = false;
+
             foreach ($courses as $course) {
-                $duration = (int)($course['durationWeeks'] ?? 0);
-                if ($duration >= ($criteria['minLeadershipCourseDuration'] ?? 4)) {
+                $duration = (int) ($course['durationWeeks'] ?? 0);
+                if ($duration >= $minWeeks) {
                     $hasLeadershipCourse = true;
                     break;
                 }
@@ -776,14 +1075,12 @@ class ShortlistService
 
             if ($hasLeadershipCourse) {
                 $points += 15;
-                $score['matched'][] = "Leadership course";
+                $score['matched'][] = "Leadership course (min {$minWeeks} weeks)";
             } else {
-                $score['missed'][] = "Leadership course - REQUIRED";
-                $score['hasAllMandatory'] = false;
+                $score['missed'][] = "Leadership course (min {$minWeeks} weeks)";
             }
         }
 
-        // Publications
         if (!empty($criteria['minPublications'])) {
             $maxPoints += 15;
             $pubCount = count($publications);
@@ -791,14 +1088,12 @@ class ShortlistService
                 $points += 15;
                 $score['matched'][] = "Publications: {$pubCount} (min: {$criteria['minPublications']})";
             } else {
-                $score['missed'][] = "Publications: {$pubCount} (min: {$criteria['minPublications']}) - REQUIRED";
-                $score['hasAllMandatory'] = false;
+                $score['missed'][] = "Publications: {$pubCount} (min: {$criteria['minPublications']})";
             }
         }
 
-        // Referees
-        if ($criteria['requireReferees'] || !empty($criteria['minRefereeCount'])) {
-            $minReferees = max($criteria['minRefereeCount'], $criteria['requireReferees'] ? 1 : 0);
+        if (!empty($criteria['requireReferees']) || !empty($criteria['minRefereeCount'])) {
+            $minReferees = max((int) ($criteria['minRefereeCount'] ?? 0), !empty($criteria['requireReferees']) ? 1 : 0);
             if ($minReferees > 0) {
                 $maxPoints += 10;
                 $refCount = count($referees);
@@ -806,175 +1101,630 @@ class ShortlistService
                     $points += 10;
                     $score['matched'][] = "Referees: {$refCount} (min: {$minReferees})";
                 } else {
-                    $score['missed'][] = "Referees: {$refCount} (min: {$minReferees}) - REQUIRED";
-                    $score['hasAllMandatory'] = false;
+                    $score['missed'][] = "Referees: {$refCount} (min: {$minReferees})";
                 }
             }
         }
 
-        // Portfolio
-        if ($criteria['requirePortfolio']) {
+        if (!empty($criteria['requirePortfolio'])) {
             $portfolioUrl = $profile['portfolioUrl'] ?? '';
-            if (!empty($portfolioUrl)) {
+            if (!empty($portfolioUrl))
                 $score['matched'][] = "Portfolio URL provided";
-            } else {
-                $score['missed'][] = "Portfolio URL - REQUIRED";
-                $score['hasAllMandatory'] = false;
-            }
+            else
+                $score['missed'][] = "Portfolio URL";
         }
 
-        if ($criteria['requireGitHubProfile']) {
+        if (!empty($criteria['requireGitHubProfile'])) {
             $githubUrl = $profile['githubUrl'] ?? '';
-            if (!empty($githubUrl)) {
+            if (!empty($githubUrl))
                 $score['matched'][] = "GitHub profile provided";
-            } else {
-                $score['missed'][] = "GitHub profile - REQUIRED";
-                $score['hasAllMandatory'] = false;
-            }
+            else
+                $score['missed'][] = "GitHub profile";
         }
 
-        if ($criteria['requireLinkedInProfile']) {
+        if (!empty($criteria['requireLinkedInProfile'])) {
             $linkedinUrl = $profile['linkedinUrl'] ?? '';
-            if (!empty($linkedinUrl)) {
+            if (!empty($linkedinUrl))
                 $score['matched'][] = "LinkedIn profile provided";
-            } else {
-                $score['missed'][] = "LinkedIn profile - REQUIRED";
-                $score['hasAllMandatory'] = false;
-            }
+            else
+                $score['missed'][] = "LinkedIn profile";
         }
 
-        if ($maxPoints > 0) {
+        if ($maxPoints > 0)
             $score['professionalScore'] = round(($points / $maxPoints) * $weight, 2);
-        } else {
+        else
             $score['professionalScore'] = $weight * 0.5;
-        }
     }
 
-    /**
-     * Calculate ranks and percentiles
-     */
+    // =========================================================
+    // RANKING —: USE EFFECTIVE SCORE + TIES + OVERRIDE DISQ
+    // =========================================================
     protected function calculateRanks(string $jobId): void
     {
-        $results = $this->db->table('shortlist_results')
+        $rows = $this->db->table('shortlist_results')
             ->where('jobId', $jobId)
-            ->orderBy('totalScore', 'DESC')
-            ->get()->getResultArray();
+            ->get()
+            ->getResultArray();
 
-        $totalCount = count($results);
+        if (empty($rows))
+            return;
+
+        // EFFICIENT FIX: If candidate has manual scores (effective override),
+        // they should be rankable regardless of original disqualification
+        $qualified = [];
+        $disqualified = [];
+
+        foreach ($rows as $r) {
+            $isDisq = $this->isEffectivelyDisqualified($r);
+            $hasManualScores = $this->hasManualScores($r);
+
+            // If disqualified BUT has manual scores, treat as qualified
+            // (admin is explicitly overriding by setting manual scores)
+            if ($isDisq && !$hasManualScores) {
+                $disqualified[] = $r;
+            } else {
+                $qualified[] = $r;
+            }
+        }
+
+        // sort by effective total DESC
+        usort($qualified, function ($a, $b) {
+            $sa = $this->getEffectiveTotalScore($a);
+            $sb = $this->getEffectiveTotalScore($b);
+            if ($sa !== $sb)
+                return ($sb <=> $sa);
+
+            // stable tie-breakers
+            $ua = strtotime($a['updatedAt'] ?? '') ?: 0;
+            $ub = strtotime($b['updatedAt'] ?? '') ?: 0;
+            if ($ua !== $ub)
+                return ($ub <=> $ua);
+
+            return strcmp((string) ($a['id'] ?? ''), (string) ($b['id'] ?? ''));
+        });
+
+        $totalCount = count($qualified);
         $currentRank = 1;
 
-        foreach ($results as $result) {
-            $percentile = $totalCount > 1 
-                ? round((($totalCount - $currentRank + 1) / $totalCount) * 100, 2) 
-                : 100;
+        $i = 0;
+        while ($i < count($qualified)) {
+            $scoreVal = $this->getEffectiveTotalScore($qualified[$i]);
 
-            $this->resultModel->update($result['id'], [
-                'candidateRank' => $currentRank,
-                'percentile' => $percentile
+            $group = [$qualified[$i]];
+            $j = $i + 1;
+            while ($j < count($qualified) && $this->getEffectiveTotalScore($qualified[$j]) == $scoreVal) {
+                $group[] = $qualified[$j];
+                $j++;
+            }
+
+            $percentile = $totalCount > 1 ? round((($totalCount - $currentRank + 1) / $totalCount) * 100, 2) : 100;
+
+            foreach ($group as $row) {
+                $this->resultModel->update($row['id'], [
+                    'candidateRank' => $currentRank,
+                    'percentile' => $percentile,
+                    'updatedAt' => date('Y-m-d H:i:s'),
+                ]);
+            }
+
+            $currentRank += count($group);
+            $i = $j;
+        }
+
+        // Only truly disqualified candidates (no manual override) get ranked as X
+        foreach ($disqualified as $row) {
+            $this->resultModel->update($row['id'], [
+                'candidateRank' => null,
+                'percentile' => 0,
+                'updatedAt' => date('Y-m-d H:i:s'),
             ]);
-
-            $currentRank++;
         }
     }
 
-    /**
-     * Get shortlist results
-     */
+    // =========================================================
+    // RESULTS FETCHING — FIXED: EFFECTIVE MIN SCORE + TOPN AFTER SORT
+    // =========================================================
     public function getShortlistResults(string $jobId, array $filters = []): array
     {
         $builder = $this->db->table('shortlist_results');
-        $builder->select('shortlist_results.*, 
+        $builder->select('shortlist_results.*,
             users.firstName, users.lastName, users.email, users.phone,
-            candidate_profiles.title, candidate_profiles.experienceYears,
-            applications.status as applicationStatus, applications.expectedSalary')
+            candidate_profiles.title, candidate_profiles.experienceYears, candidate_profiles.resumeUrl,
+            applications.status as applicationStatus, applications.expectedSalary
+        ')
             ->join('users', 'users.id = shortlist_results.candidateId', 'left')
             ->join('candidate_profiles', 'candidate_profiles.userId = users.id', 'left')
             ->join('applications', 'applications.id = shortlist_results.applicationId', 'left')
             ->where('shortlist_results.jobId', $jobId);
 
-        if (!empty($filters['minScore'])) {
-            $builder->where('shortlist_results.totalScore >=', (float)$filters['minScore']);
-        }
-
-        if (!empty($filters['status'])) {
+        if (!empty($filters['status']))
             $builder->where('applications.status', $filters['status']);
-        }
-
-        if (isset($filters['hasAllMandatory']) && $filters['hasAllMandatory']) {
+        if (!empty($filters['hasAllMandatory']))
             $builder->where('shortlist_results.hasAllMandatory', true);
-        }
-
-        if (isset($filters['flaggedForReview']) && $filters['flaggedForReview']) {
+        if (!empty($filters['flaggedForReview']))
             $builder->where('shortlist_results.flaggedForReview', true);
+
+        // include disqualified (default true should be controlled from controller)
+        if (!isset($filters['includeDisqualified']) || !$filters['includeDisqualified']) {
+            $builder->where('shortlist_results.hasDisqualifyingFactor', false);
         }
 
+        // ranked first, disqualified last
+        $builder->orderBy('shortlist_results.candidateRank IS NULL', 'ASC', false);
         $builder->orderBy('shortlist_results.candidateRank', 'ASC');
 
         $results = $builder->get()->getResultArray();
 
         foreach ($results as &$result) {
-            if (!empty($result['matchedCriteria']) && is_string($result['matchedCriteria'])) {
-                $result['matchedCriteria'] = json_decode($result['matchedCriteria'], true);
+            foreach (self::RESULT_JSON_FIELDS as $f) {
+                if (isset($result[$f]) && is_string($result[$f])) {
+                    $decoded = json_decode($result[$f], true);
+                    $result[$f] = is_array($decoded) ? $decoded : [];
+                }
             }
-            if (!empty($result['missedCriteria']) && is_string($result['missedCriteria'])) {
-                $result['missedCriteria'] = json_decode($result['missedCriteria'], true);
-            }
-            if (!empty($result['bonusCriteria']) && is_string($result['bonusCriteria'])) {
-                $result['bonusCriteria'] = json_decode($result['bonusCriteria'], true);
-            }
-            if (!empty($result['disqualificationReasons']) && is_string($result['disqualificationReasons'])) {
-                $result['disqualificationReasons'] = json_decode($result['disqualificationReasons'], true);
-            }
+
+            // computed effective fields
+            $result['effectiveTotalScore'] = $this->getEffectiveTotalScore($result);
+            $result['effectiveEducationScore'] = $this->getEffectiveCategoryScore($result, 'education');
+            $result['effectiveExperienceScore'] = $this->getEffectiveCategoryScore($result, 'experience');
+            $result['effectiveSkillsScore'] = $this->getEffectiveCategoryScore($result, 'skills');
+            $result['effectiveClearanceScore'] = $this->getEffectiveCategoryScore($result, 'clearance');
+            $result['effectiveProfessionalScore'] = $this->getEffectiveCategoryScore($result, 'professional');
+            $result['isEffectivelyDisqualified'] = $this->isEffectivelyDisqualified($result);
+        }
+
+        // minScore must apply to effectiveTotalScore
+        if (!empty($filters['minScore'])) {
+            $min = (float) $filters['minScore'];
+            $results = array_values(array_filter($results, fn($r) => (float) ($r['effectiveTotalScore'] ?? 0) >= $min));
+        }
+
+        // topN applies after sorting and filtering
+        if (!empty($filters['topN']) && (int) $filters['topN'] > 0) {
+            $results = array_slice($results, 0, (int) $filters['topN']);
         }
 
         return $results;
     }
 
-    /**
-     * Export to Excel-ready format
-     */
-    public function buildShortlistExportData(string $jobId): array
+    // =========================================================
+    // EXPORT BUNDLE
+    // =========================================================
+    public function buildShortlistExportBundle(string $jobId, array $filters = [], ?int $topN = null): array
     {
-        $results = $this->getShortlistResults($jobId);
+        $results = $this->getShortlistResults($jobId, $filters);
 
-        $rows = [];
-        foreach ($results as $result) {
-            $rows[] = [
-                'Rank' => $result['candidateRank'] ?? '',
-                'Name' => trim(($result['firstName'] ?? '') . ' ' . ($result['lastName'] ?? '')),
-                'Email' => $result['email'] ?? '',
-                'Phone' => $result['phone'] ?? '',
-                'Title' => $result['title'] ?? '',
-                'Experience' => $result['experienceYears'] ?? '',
-                'Total Score' => $result['totalScore'] ?? 0,
-                'Percentile' => $result['percentile'] ?? 0,
-                'Education Score' => $result['educationScore'] ?? 0,
-                'Experience Score' => $result['experienceScore'] ?? 0,
-                'Skills Score' => $result['skillsScore'] ?? 0,
-                'Clearance Score' => $result['clearanceScore'] ?? 0,
-                'Professional Score' => $result['professionalScore'] ?? 0,
-                'All Mandatory Met' => ($result['hasAllMandatory'] ?? false) ? 'Yes' : 'No',
-                'Disqualified' => ($result['hasDisqualifyingFactor'] ?? false) ? 'Yes' : 'No',
-                'Application Status' => $result['applicationStatus'] ?? '',
-                'Expected Salary' => $result['expectedSalary'] ?? '',
-                'Matched Criteria' => is_array($result['matchedCriteria']) 
-                    ? implode('; ', $result['matchedCriteria']) : '',
-                'Missed Criteria' => is_array($result['missedCriteria']) 
-                    ? implode('; ', $result['missedCriteria']) : '',
-                'Bonus Points' => is_array($result['bonusCriteria']) 
-                    ? implode('; ', $result['bonusCriteria']) : ''
+        $resultsToExport = $results;
+        if ($topN && $topN > 0 && $topN < count($resultsToExport)) {
+            $resultsToExport = array_slice($resultsToExport, 0, $topN);
+        }
+
+        $userIds = array_values(array_unique(array_filter(array_column($resultsToExport, 'candidateId'))));
+        if (empty($userIds)) {
+            return ['resultsToExport' => [], 'profilesMap' => []];
+        }
+
+        $profileIdMap = $this->getCandidateProfileIdMap($userIds);
+        $profileIds = array_values(array_unique(array_filter(array_values($profileIdMap))));
+        if (empty($profileIds)) {
+            return ['resultsToExport' => $resultsToExport, 'profilesMap' => []];
+        }
+
+        $personalInfoMap = $this->getPersonalInfoMap($profileIds);
+        $educationMap = $this->getEducationMap($profileIds);
+        $experienceMap = $this->getExperienceMap($profileIds);
+        $clearanceMap = $this->getClearanceMap($profileIds);
+        $membershipMap = $this->getMembershipMap($profileIds);
+        $courseMap = $this->getCourseMap($profileIds);
+        $publicationMap = $this->getPublicationMap($profileIds);
+        $certificationMap = $this->getCertificationMap($profileIds);
+        $refereeMap = $this->getRefereeMap($profileIds);
+
+        $profilesMap = [];
+
+        foreach ($resultsToExport as $r) {
+            $userId = $r['candidateId'] ?? null;
+            if (!$userId)
+                continue;
+
+            $pid = $profileIdMap[$userId] ?? null;
+            $pInfo = $pid ? ($personalInfoMap[$pid] ?? []) : [];
+
+            $age = '';
+            if (!empty($pInfo['dob'])) {
+                try {
+                    $dob = new \DateTime($pInfo['dob']);
+                    $age = (new \DateTime())->diff($dob)->y;
+                } catch (\Exception $e) {
+                    $age = '';
+                }
+            }
+
+            $eduTop = $pid ? ($educationMap[$pid]['Doctorate'] ?? '') : '';
+            if (!$eduTop)
+                $eduTop = $pid ? ($educationMap[$pid]['Masters'] ?? '') : '';
+            if (!$eduTop)
+                $eduTop = $pid ? ($educationMap[$pid]['Bachelors'] ?? '') : '';
+
+            $expSummary = $pid ? ($experienceMap[$pid]['all'] ?? '') : '';
+            $currentEmployer = $pid ? ($experienceMap[$pid]['current'] ?? '') : '';
+
+            $clearancesSummary = $pid ? $this->formatClearancesSummary($clearanceMap[$pid] ?? []) : '';
+
+            $profilesMap[$userId] = [
+                'countyOfOrigin' => $pInfo['countyOfOrigin'] ?? '',
+                'nationality' => $pInfo['nationality'] ?? '',
+                'dob' => $this->formatDate($pInfo['dob'] ?? ''),
+                'age' => $age,
+                'gender' => $pInfo['gender'] ?? '',
+                'plwd' => !empty($pInfo['plwd']) ? 'Y' : 'N',
+                'educationTop' => $eduTop,
+                'experienceSummary' => $expSummary,
+                'currentEmployer' => $currentEmployer,
+                'clearancesSummary' => $clearancesSummary,
+                'memberships' => $pid ? ($membershipMap[$pid]['names'] ?? '') : '',
+                'courses' => $pid ? ($courseMap[$pid] ?? '') : '',
+                'publications' => $pid ? ($publicationMap[$pid] ?? '') : '',
+                'certifications' => $pid ? ($certificationMap[$pid] ?? '') : '',
+                'referees' => $pid ? ($refereeMap[$pid] ?? '') : '',
+                'resumeUrl' => $r['resumeUrl'] ?? '',
             ];
         }
 
-        return $rows;
+        return [
+            'resultsToExport' => $resultsToExport,
+            'profilesMap' => $profilesMap,
+        ];
     }
 
-    // ==================== HELPER METHODS ====================
+    // =========================================================
+    // EXPORT MAPS
+    // =========================================================
 
+    private function getCandidateProfileIdMap(array $userIds): array
+    {
+        if (empty($userIds))
+            return [];
+
+        $rows = $this->db->table('candidate_profiles')
+            ->select('id, userId')
+            ->whereIn('userId', $userIds)
+            ->get()->getResultArray();
+
+        $map = [];
+        foreach ($rows as $r)
+            $map[$r['userId']] = $r['id'];
+        return $map;
+    }
+
+    private function getPersonalInfoMap(array $profileIds): array
+    {
+        if (empty($profileIds))
+            return [];
+
+        $rows = $this->db->table('candidate_personal_info')
+            ->select('candidateId, dob, gender, idNumber, nationality, countyOfOrigin, plwd')
+            ->whereIn('candidateId', $profileIds)
+            ->get()->getResultArray();
+
+        $map = [];
+        foreach ($rows as $r) {
+            $map[$r['candidateId']] = [
+                'dob' => $r['dob'] ?? '',
+                'gender' => $r['gender'] ?? '',
+                'idNumber' => $r['idNumber'] ?? '',
+                'nationality' => $r['nationality'] ?? '',
+                'countyOfOrigin' => $r['countyOfOrigin'] ?? '',
+                'plwd' => (bool) ($r['plwd'] ?? false),
+            ];
+        }
+        return $map;
+    }
+
+    private function getClearanceMap(array $profileIds): array
+    {
+        if (empty($profileIds))
+            return [];
+
+        $rows = $this->db->table('candidate_clearances')
+            ->select('candidateId, type, status, issueDate, expiryDate')
+            ->whereIn('candidateId', $profileIds)
+            ->get()->getResultArray();
+
+        $map = [];
+        foreach ($rows as $r) {
+            $cid = $r['candidateId'];
+            $type = $r['type'];
+
+            if (!isset($map[$cid]))
+                $map[$cid] = [];
+            if (!isset($map[$cid][$type]))
+                $map[$cid][$type] = ['status' => 'N', 'validity' => ''];
+
+            if (strtoupper($r['status'] ?? '') === 'VALID') {
+                $map[$cid][$type]['status'] = 'Y';
+                $validity = '';
+                if (!empty($r['expiryDate']))
+                    $validity = $this->formatDate($r['expiryDate']);
+                elseif (!empty($r['issueDate']))
+                    $validity = $this->formatDate($r['issueDate']);
+                $map[$cid][$type]['validity'] = $validity;
+            }
+        }
+        return $map;
+    }
+
+    private function getEducationMap(array $profileIds): array
+    {
+        if (empty($profileIds))
+            return [];
+
+        $rows = $this->db->table('educations')
+            ->select('candidateId, degree, fieldOfStudy, institution, endDate, isCurrent')
+            ->whereIn('candidateId', $profileIds)
+            ->orderBy('endDate', 'DESC')
+            ->get()->getResultArray();
+
+        $map = [];
+        foreach ($rows as $r) {
+            $cid = $r['candidateId'];
+            $degree = $r['degree'] ?? '';
+            $field = $r['fieldOfStudy'] ?? '';
+            $institution = $r['institution'] ?? '';
+            $year = $this->extractYear($r['endDate'] ?? '', $r['isCurrent'] ?? false);
+
+            $text = trim("$degree $field $institution $year");
+            if (!$text)
+                continue;
+
+            if (!isset($map[$cid]))
+                $map[$cid] = [];
+
+            $degreeUpper = strtoupper($degree);
+            if (strpos($degreeUpper, 'PHD') !== false || strpos($degreeUpper, 'DOCTOR') !== false) {
+                if (empty($map[$cid]['Doctorate']))
+                    $map[$cid]['Doctorate'] = $text;
+            } elseif (strpos($degreeUpper, 'MASTER') !== false || strpos($degreeUpper, 'MSC') !== false) {
+                if (empty($map[$cid]['Masters']))
+                    $map[$cid]['Masters'] = $text;
+            } elseif (strpos($degreeUpper, 'BACHELOR') !== false || strpos($degreeUpper, 'BSC') !== false || strpos($degreeUpper, 'BA') !== false) {
+                if (empty($map[$cid]['Bachelors']))
+                    $map[$cid]['Bachelors'] = $text;
+            }
+        }
+
+        return $map;
+    }
+
+    private function getExperienceMap(array $profileIds): array
+    {
+        if (empty($profileIds))
+            return [];
+
+        $rows = $this->db->table('experiences')
+            ->select('candidateId, title, company, startDate, endDate, isCurrent')
+            ->whereIn('candidateId', $profileIds)
+            ->orderBy('isCurrent', 'DESC')
+            ->orderBy('startDate', 'DESC')
+            ->get()->getResultArray();
+
+        $map = [];
+        foreach ($rows as $r) {
+            $cid = $r['candidateId'];
+            $title = $r['title'] ?? '';
+            $company = $r['company'] ?? '';
+            $duration = $this->formatDuration($r['startDate'] ?? '', $r['endDate'] ?? '', $r['isCurrent'] ?? false);
+            $text = trim("$title - $company ($duration)");
+
+            if (!isset($map[$cid]))
+                $map[$cid] = ['all' => '', 'senior' => '', 'current' => ''];
+
+            if ($map[$cid]['all'])
+                $map[$cid]['all'] .= '; ';
+            $map[$cid]['all'] .= $text;
+
+            $titleLower = strtolower($title);
+            $seniorKeywords = ['director', 'manager', 'head', 'chief', 'executive', 'vp', 'president', 'ceo', 'cfo', 'cto', 'coo'];
+            foreach ($seniorKeywords as $kw) {
+                if (strpos($titleLower, $kw) !== false) {
+                    if ($map[$cid]['senior'])
+                        $map[$cid]['senior'] .= '; ';
+                    $map[$cid]['senior'] .= $text;
+                    break;
+                }
+            }
+
+            if (!empty($r['isCurrent'])) {
+                if ($map[$cid]['current'])
+                    $map[$cid]['current'] .= '; ';
+                $map[$cid]['current'] .= $text;
+            }
+        }
+
+        return $map;
+    }
+
+    private function getMembershipMap(array $profileIds): array
+    {
+        if (empty($profileIds))
+            return [];
+
+        $rows = $this->db->table('candidate_professional_memberships')
+            ->select('candidateId, bodyName, isActive, goodStanding')
+            ->whereIn('candidateId', $profileIds)
+            ->get()->getResultArray();
+
+        $map = [];
+        foreach ($rows as $r) {
+            $cid = $r['candidateId'];
+            $bodyName = $r['bodyName'] ?? '';
+            $isActive = !empty($r['isActive']);
+            $goodStanding = !empty($r['goodStanding']);
+
+            if (!isset($map[$cid]))
+                $map[$cid] = ['names' => '', 'standing' => ''];
+
+            if ($bodyName) {
+                if ($map[$cid]['names'])
+                    $map[$cid]['names'] .= ', ';
+                $map[$cid]['names'] .= $bodyName;
+
+                if ($isActive && $goodStanding) {
+                    if ($map[$cid]['standing'])
+                        $map[$cid]['standing'] .= ', ';
+                    $map[$cid]['standing'] .= $bodyName . ' (Good Standing)';
+                }
+            }
+        }
+        return $map;
+    }
+
+    private function getCourseMap(array $profileIds): array
+    {
+        if (empty($profileIds))
+            return [];
+
+        $rows = $this->db->table('candidate_courses')
+            ->select('candidateId, name, institution, durationWeeks')
+            ->whereIn('candidateId', $profileIds)
+            ->get()->getResultArray();
+
+        $map = [];
+        foreach ($rows as $r) {
+            $cid = $r['candidateId'];
+            $name = $r['name'] ?? '';
+            $institution = $r['institution'] ?? '';
+            $duration = $r['durationWeeks'] ?? '';
+
+            $text = trim("$name - $institution" . ($duration ? " ($duration weeks)" : ''));
+            if (!isset($map[$cid]))
+                $map[$cid] = '';
+            if ($map[$cid])
+                $map[$cid] .= ', ';
+            $map[$cid] .= $text;
+        }
+
+        return $map;
+    }
+
+    private function getPublicationMap(array $profileIds): array
+    {
+        if (empty($profileIds))
+            return [];
+
+        $rows = $this->db->table('candidate_publications')
+            ->select('candidateId, title, year')
+            ->whereIn('candidateId', $profileIds)
+            ->orderBy('year', 'DESC')
+            ->get()->getResultArray();
+
+        $map = [];
+        foreach ($rows as $r) {
+            $cid = $r['candidateId'];
+            $title = $r['title'] ?? '';
+            $year = $r['year'] ?? '';
+
+            $text = trim("$title ($year)");
+            if (!isset($map[$cid]))
+                $map[$cid] = '';
+            if ($map[$cid])
+                $map[$cid] .= '; ';
+            $map[$cid] .= $text;
+        }
+
+        return $map;
+    }
+
+    private function getCertificationMap(array $profileIds): array
+    {
+        if (empty($profileIds))
+            return [];
+
+        $rows = $this->db->table('certifications')
+            ->select('candidateId, name, issuingOrg')
+            ->whereIn('candidateId', $profileIds)
+            ->get()->getResultArray();
+
+        $map = [];
+        foreach ($rows as $r) {
+            $cid = $r['candidateId'];
+            $name = $r['name'] ?? '';
+            $org = $r['issuingOrg'] ?? '';
+
+            $text = trim("$name - $org");
+            if (!isset($map[$cid]))
+                $map[$cid] = '';
+            if ($map[$cid])
+                $map[$cid] .= ', ';
+            $map[$cid] .= $text;
+        }
+
+        return $map;
+    }
+
+    private function getRefereeMap(array $profileIds): array
+    {
+        if (empty($profileIds))
+            return [];
+
+        $rows = $this->db->table('candidate_referees')
+            ->select('candidateId, name, position, organization, phone, email')
+            ->whereIn('candidateId', $profileIds)
+            ->get()->getResultArray();
+
+        $counts = [];
+        $map = [];
+
+        foreach ($rows as $r) {
+            $cid = $r['candidateId'];
+            $counts[$cid] = $counts[$cid] ?? 0;
+            if ($counts[$cid] >= 3)
+                continue;
+
+            $name = $r['name'] ?? '';
+            $pos = $r['position'] ?? '';
+            $org = $r['organization'] ?? '';
+            $phone = $r['phone'] ?? '';
+            $email = $r['email'] ?? '';
+
+            $text = trim("$name, $pos, $org, Tel: $phone, Email: $email");
+
+            if (!isset($map[$cid]))
+                $map[$cid] = '';
+            if ($map[$cid])
+                $map[$cid] .= '; ';
+            $map[$cid] .= $text;
+
+            $counts[$cid]++;
+        }
+
+        return $map;
+    }
+
+    private function formatClearancesSummary(array $clearanceMapForCandidate): string
+    {
+        if (empty($clearanceMapForCandidate))
+            return '';
+
+        $parts = [];
+        foreach ($clearanceMapForCandidate as $type => $info) {
+            $status = $info['status'] ?? 'N';
+            if ($status !== 'Y')
+                continue;
+
+            $validity = $info['validity'] ?? '';
+            $parts[] = $type . ($validity ? " (Valid until: {$validity})" : '');
+        }
+        return implode('; ', $parts);
+    }
+
+    // =========================================================
+    // HELPERS
+    // =========================================================
     protected function calculateSeniorExperience(array $experiences): int
     {
         $seniorYears = 0;
-        $seniorKeywords = ['director', 'manager', 'head', 'chief', 'executive', 'vp', 'president', 'ceo', 'cfo', 'cto', 'coo', 'lead'];
+        $seniorKeywords = ['director', 'manager', 'head', 'chief', 'executive', 'vp', 'vice president', 'president', 'ceo', 'cfo', 'cto', 'coo', 'lead'];
 
         foreach ($experiences as $exp) {
             $title = strtolower($exp['title'] ?? '');
@@ -988,30 +1738,42 @@ class ShortlistService
             }
 
             if ($isSenior && !empty($exp['startDate'])) {
-                $startYear = (int)date('Y', strtotime($exp['startDate']));
-                $endYear = !empty($exp['isCurrent']) 
-                    ? (int)date('Y') 
-                    : (int)date('Y', strtotime($exp['endDate'] ?? 'now'));
-                $seniorYears += max(0, $endYear - $startYear);
-            }
-        }
+                try {
+                    $startDate = new \DateTime($exp['startDate']);
+                    if (!empty($exp['isCurrent']))
+                        $endDate = new \DateTime();
+                    elseif (!empty($exp['endDate']))
+                        $endDate = new \DateTime($exp['endDate']);
+                    else
+                        continue;
 
-        return $seniorYears;
-    }
-
-    protected function hasManagementExperience(array $experiences): bool
-    {
-        $managementKeywords = ['manager', 'management', 'director', 'head', 'lead', 'supervisor', 'chief'];
-
-        foreach ($experiences as $exp) {
-            $title = strtolower($exp['title'] ?? '');
-            foreach ($managementKeywords as $keyword) {
-                if (strpos($title, $keyword) !== false) {
-                    return true;
+                    $interval = $startDate->diff($endDate);
+                    $years = $interval->y;
+                    $months = $interval->m;
+                    $seniorYears += $years + floor($months / 12);
+                } catch (\Exception $e) {
+                    continue;
                 }
             }
         }
 
+        return (int) $seniorYears;
+    }
+
+    protected function hasManagementExperience(array $experiences): bool
+    {
+        $managementKeywords = ['manager', 'management', 'director', 'head', 'lead', 'supervisor', 'chief', 'team lead'];
+
+        foreach ($experiences as $exp) {
+            $title = strtolower($exp['title'] ?? '');
+            $description = strtolower($exp['description'] ?? '');
+
+            foreach ($managementKeywords as $keyword) {
+                if (strpos($title, $keyword) !== false || strpos($description, $keyword) !== false) {
+                    return true;
+                }
+            }
+        }
         return false;
     }
 
@@ -1019,38 +1781,28 @@ class ShortlistService
     {
         $types = ['mnc' => false, 'startup' => false, 'ngo' => false, 'government' => false];
 
-        $mncKeywords = ['multinational', 'google', 'microsoft', 'amazon', 'facebook', 'apple', 'ibm', 'oracle', 'sap'];
-        $startupKeywords = ['startup', 'tech startup', 'co-founder'];
-        $ngoKeywords = ['ngo', 'non-profit', 'foundation', 'charity', 'unicef', 'red cross'];
-        $govKeywords = ['government', 'ministry', 'county', 'national', 'public service'];
+        $mncKeywords = ['multinational', 'google', 'microsoft', 'amazon', 'facebook', 'meta', 'apple', 'ibm', 'oracle', 'sap', 'salesforce', 'accenture', 'deloitte', 'pwc', 'kpmg', 'ey'];
+        $startupKeywords = ['startup', 'start-up', 'tech startup', 'co-founder', 'founder'];
+        $ngoKeywords = ['ngo', 'non-profit', 'nonprofit', 'foundation', 'charity', 'unicef', 'red cross', 'humanitarian'];
+        $govKeywords = ['government', 'ministry', 'county', 'national', 'public service', 'state', 'federal', 'municipal'];
 
         foreach ($experiences as $exp) {
             $company = strtolower($exp['company'] ?? '');
             $description = strtolower($exp['description'] ?? '');
+            $combined = $company . ' ' . $description;
 
-            foreach ($mncKeywords as $keyword) {
-                if (strpos($company, $keyword) !== false || strpos($description, $keyword) !== false) {
+            foreach ($mncKeywords as $keyword)
+                if (strpos($combined, $keyword) !== false)
                     $types['mnc'] = true;
-                }
-            }
-
-            foreach ($startupKeywords as $keyword) {
-                if (strpos($company, $keyword) !== false || strpos($description, $keyword) !== false) {
+            foreach ($startupKeywords as $keyword)
+                if (strpos($combined, $keyword) !== false)
                     $types['startup'] = true;
-                }
-            }
-
-            foreach ($ngoKeywords as $keyword) {
-                if (strpos($company, $keyword) !== false || strpos($description, $keyword) !== false) {
+            foreach ($ngoKeywords as $keyword)
+                if (strpos($combined, $keyword) !== false)
                     $types['ngo'] = true;
-                }
-            }
-
-            foreach ($govKeywords as $keyword) {
-                if (strpos($company, $keyword) !== false || strpos($description, $keyword) !== false) {
+            foreach ($govKeywords as $keyword)
+                if (strpos($combined, $keyword) !== false)
                     $types['government'] = true;
-                }
-            }
         }
 
         return $types;
@@ -1060,5 +1812,40 @@ class ShortlistService
     {
         $skill = $this->db->table('skills')->where('id', $skillId)->get()->getRowArray();
         return $skill['name'] ?? "Skill #{$skillId}";
+    }
+
+    private function formatDate($dateString): string
+    {
+        if (empty($dateString) || $dateString === '0000-00-00 00:00:00.000' || $dateString === '0000-00-00')
+            return '';
+        try {
+            return date('d/m/Y', strtotime($dateString));
+        } catch (\Exception $e) {
+            return '';
+        }
+    }
+
+    private function extractYear($dateString, $isCurrent): string
+    {
+        if ($isCurrent)
+            return date('Y');
+        if (empty($dateString))
+            return '';
+        try {
+            return date('Y', strtotime($dateString));
+        } catch (\Exception $e) {
+            return '';
+        }
+    }
+
+    private function formatDuration($startDate, $endDate, $isCurrent): string
+    {
+        $start = $this->extractYear($startDate, false);
+        $end = $isCurrent ? 'Present' : $this->extractYear($endDate, false);
+        if (!$start)
+            return $end;
+        if (!$end)
+            return $start;
+        return "$start - $end";
     }
 }

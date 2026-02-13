@@ -13,14 +13,60 @@ class ShortlistResult extends Model
     protected $protectFields = true;
 
     protected $allowedFields = [
-        'id', 'jobId', 'applicationId', 'candidateId',
-        'totalScore', 'educationScore', 'experienceScore', 'skillsScore',
-        'clearanceScore', 'professionalScore',
-        'candidateRank', 'percentile',
-        'matchedCriteria', 'missedCriteria', 'bonusCriteria',
-        'hasAllMandatory', 'hasDisqualifyingFactor', 'disqualificationReasons',
-        'hrNotes', 'flaggedForReview', 'reviewedBy', 'reviewedAt', 'internalRating',
-        'generatedAt', 'updatedAt'
+        'id',
+        'jobId',
+        'applicationId',
+        'candidateId',
+
+        // System scores
+        'totalScore',
+        'educationScore',
+        'experienceScore',
+        'skillsScore',
+        'clearanceScore',
+        'professionalScore',
+
+        // Manual scores (admin)
+        'manualTotalScore',
+        'manualEducationScore',
+        'manualExperienceScore',
+        'manualSkillsScore',
+        'manualClearanceScore',
+        'manualProfessionalScore',
+
+        // Audit / scoring metadata
+        'scoreSource',
+        'scoredBy',
+        'scoredAt',
+        'auditFlag',
+
+        // Disqualification override
+        'overrideDisqualification',
+        'overrideDisqualificationBy',
+        'overrideDisqualificationAt',
+
+        // Ranking
+        'candidateRank',
+        'percentile',
+
+        // Analysis
+        'matchedCriteria',
+        'missedCriteria',
+        'bonusCriteria',
+        'hasAllMandatory',
+        'hasDisqualifyingFactor',
+        'disqualificationReasons',
+
+        // HR annotations
+        'hrNotes',
+        'flaggedForReview',
+        'reviewedBy',
+        'reviewedAt',
+        'internalRating',
+
+        // Metadata
+        'generatedAt',
+        'updatedAt'
     ];
 
     protected $useTimestamps = false;
@@ -28,8 +74,8 @@ class ShortlistResult extends Model
     protected $createdField = 'generatedAt';
     protected $updatedField = 'updatedAt';
 
-    protected $beforeInsert = ['setId', 'setTimestamps', 'encodeJson'];
-    protected $beforeUpdate = ['setTimestamps', 'encodeJson'];
+    protected $beforeInsert = ['setId', 'setTimestamps', 'encodeJson', 'normalizeAuditFields'];
+    protected $beforeUpdate = ['setTimestamps', 'encodeJson', 'normalizeAuditFields'];
     protected $afterFind = ['decodeJson'];
 
     protected function setId(array $data)
@@ -58,7 +104,37 @@ class ShortlistResult extends Model
             if (isset($data['data'][$field]) && is_array($data['data'][$field])) {
                 $data['data'][$field] = json_encode($data['data'][$field]);
             }
+            if (!isset($data['data'][$field])) {
+                $data['data'][$field] = json_encode([]);
+            }
         }
+
+        return $data;
+    }
+
+    protected function normalizeAuditFields(array $data)
+    {
+        $manualFields = [
+            'manualTotalScore',
+            'manualEducationScore',
+            'manualExperienceScore',
+            'manualSkillsScore',
+            'manualClearanceScore',
+            'manualProfessionalScore',
+        ];
+
+        $hasManual = false;
+        foreach ($manualFields as $f) {
+            if (array_key_exists($f, $data['data']) && $data['data'][$f] !== null && $data['data'][$f] !== '') {
+                $hasManual = true;
+                break;
+            }
+        }
+
+        $overrideDisq = !empty($data['data']['overrideDisqualification']);
+
+        $data['data']['auditFlag'] = ($hasManual || $overrideDisq) ? 1 : 0;
+        $data['data']['scoreSource'] = $hasManual ? 'MANUAL' : 'SYSTEM';
 
         return $data;
     }
@@ -69,16 +145,17 @@ class ShortlistResult extends Model
 
         if (isset($data['data'])) {
             $record = &$data['data'];
-        } elseif (isset($data[0])) {
+            $this->decodeJsonRecord($record, $jsonFields);
+            return $data;
+        }
+
+        if (isset($data[0])) {
             foreach ($data as &$record) {
                 $this->decodeJsonRecord($record, $jsonFields);
             }
             return $data;
-        } else {
-            $record = &$data;
         }
 
-        $this->decodeJsonRecord($record, $jsonFields);
         return $data;
     }
 
@@ -88,6 +165,9 @@ class ShortlistResult extends Model
             if (isset($record[$field]) && is_string($record[$field])) {
                 $decoded = json_decode($record[$field], true);
                 $record[$field] = $decoded ?? [];
+            }
+            if (!isset($record[$field])) {
+                $record[$field] = [];
             }
         }
     }
