@@ -54,19 +54,25 @@ class ProfileRequirementService
             ];
         }
 
-        // For related tables, do selective counts (fast).
+        // load phone from USERS table
+        $userModel = new \App\Models\User();
+        $userRow = $userModel->select('phone')->find($candidateUserId);
+        $userPhone = $userRow['phone'] ?? null;
+
         $db = \Config\Database::connect();
 
         $checks = [];
         foreach ($requiredKeys as $k) {
-            $checks[$k] = $this->checkOne($db, $profile, $k);
+            $checks[$k] = $this->checkOne($db, $profile, $k, $userPhone);
         }
 
         $missingKeys = [];
         $completedCount = 0;
         foreach ($checks as $k => $ok) {
-            if ($ok) $completedCount++;
-            else $missingKeys[] = $k;
+            if ($ok)
+                $completedCount++;
+            else
+                $missingKeys[] = $k;
         }
 
         $total = count($requiredKeys);
@@ -81,24 +87,20 @@ class ProfileRequirementService
         ];
     }
 
-    /**
-     * Single requirement check.
-     * Keep it deterministic, fast, and aligned with frontend labels.
-     */
-    private function checkOne($db, array $profile, string $key): bool
+    private function checkOne($db, array $profile, string $key, ?string $userPhone = null): bool
     {
         switch ($key) {
             case 'BASIC_PHONE':
-                return !empty(trim((string)($profile['phone'] ?? '')));
+                return !empty(trim((string) ($userPhone ?? '')));
 
             case 'BASIC_LOCATION':
-                return !empty(trim((string)($profile['location'] ?? '')));
+                return !empty(trim((string) ($profile['location'] ?? '')));
 
             case 'BASIC_TITLE':
-                return !empty(trim((string)($profile['title'] ?? '')));
+                return !empty(trim((string) ($profile['title'] ?? '')));
 
             case 'BASIC_BIO':
-                $bio = trim((string)($profile['bio'] ?? ''));
+                $bio = trim((string) ($profile['bio'] ?? ''));
                 return strlen($bio) >= 50 && $bio !== ($profile['title'] ?? null);
 
             case 'RESUME':
