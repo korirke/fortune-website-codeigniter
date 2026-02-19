@@ -40,6 +40,123 @@ class Interviews extends BaseController
     }
 
     /**
+     * ==========================================================
+     * AUTHZ HELPERS (COMPANY SCOPING)
+     * ==========================================================
+     */
+
+    private function getAuthUser()
+    {
+        return $this->request->user ?? null;
+    }
+
+    private function isAdminRole($role)
+    {
+        return in_array($role, ['SUPER_ADMIN', 'MODERATOR'], true);
+    }
+
+    /**
+     * Returns employerProfile row or null.
+     * employer_profiles has userId -> companyId relationship.
+     */
+    private function getEmployerProfileByUserId($userId)
+    {
+        $db = \Config\Database::connect();
+        return $db->table('employer_profiles')
+            ->where('userId', $userId)
+            ->get()
+            ->getRowArray();
+    }
+
+    /**
+     * Returns companyId for employer-like roles (EMPLOYER/HR_MANAGER), or null if not found.
+     */
+    private function getCompanyIdForEmployerUser($user)
+    {
+        if (!$user)
+            return null;
+
+        // Treat HR_MANAGER similar to employer for data scoping.
+        if (!in_array($user->role ?? '', ['EMPLOYER', 'HR_MANAGER'], true)) {
+            return null;
+        }
+
+        $employerProfile = $this->getEmployerProfileByUserId($user->id);
+        return $employerProfile['companyId'] ?? null;
+    }
+
+    /**
+     * Enforce that an interview belongs to employer company via job.companyId (unless admin).
+     */
+    private function authorizeInterviewAccess($interviewId)
+    {
+        $user = $this->getAuthUser();
+        if (!$user)
+            return [false, $this->fail('Unauthorized', 401)];
+
+        if ($this->isAdminRole($user->role ?? '')) {
+            return [true, null];
+        }
+
+        $companyId = $this->getCompanyIdForEmployerUser($user);
+        if (!$companyId) {
+            return [false, $this->fail('Employer profile not found', 404)];
+        }
+
+        $db = \Config\Database::connect();
+
+        // Check interview -> job -> company ownership
+        $row = $db->table('interviews')
+            ->select('interviews.id, jobs.companyId')
+            ->join('jobs', 'jobs.id = interviews.jobId', 'inner')
+            ->where('interviews.id', $interviewId)
+            ->get()
+            ->getRowArray();
+
+        if (!$row) {
+            return [false, $this->failNotFound('Interview not found')];
+        }
+
+        if (($row['companyId'] ?? null) !== $companyId) {
+            return [false, $this->fail('Forbidden: not your company interview', 403)];
+        }
+
+        return [true, null];
+    }
+
+    /**
+     * Enforce that a job belongs to employer company (unless admin).
+     */
+    private function authorizeJobAccess($jobId)
+    {
+        $user = $this->getAuthUser();
+        if (!$user)
+            return [false, $this->fail('Unauthorized', 401)];
+
+        if ($this->isAdminRole($user->role ?? '')) {
+            return [true, null];
+        }
+
+        $companyId = $this->getCompanyIdForEmployerUser($user);
+        if (!$companyId) {
+            return [false, $this->fail('Employer profile not found', 404)];
+        }
+
+        $db = \Config\Database::connect();
+        $job = $db->table('jobs')->where('id', $jobId)->get()->getRowArray();
+        
+        if (!$job) {
+            return [false, $this->failNotFound('Job not found')];
+        }
+
+        if (($job['companyId'] ?? null) !== $companyId) {
+            return [false, $this->fail('Forbidden: not your company job', 403)];
+        }
+
+        return [true, null];
+    }
+
+    /**
      * @OA\Post(
      *     path="/api/interviews",
      *     tags={"Interviews"},
@@ -75,6 +192,11 @@ class Interviews extends BaseController
             if (!$this->validate($rules)) {
                 return $this->fail($this->validator->getErrors(), 400);
             }
+
+            // ✅ AUTHZ: Ensure job belongs to employer's company
+            [$ok, $resp] = $this->authorizeJobAccess($data['jobId']);
+            if (!$ok)
+                return $resp;
 
             $application = $this->applicationModel->find($data['applicationId']);
             if (!$application) {
@@ -124,7 +246,7 @@ class Interviews extends BaseController
                 'status' => 'INTERVIEW'
             ]);
 
-            $interview = $this->interviewModel->getInterviewWithDetails($interviewData['id'], $user->id, $user->role);
+            $interview = $this->getInterviewWithDetailsScoped($interviewData['id'], $user);
 
             $this->sendInterviewNotification($interview, 'scheduled');
 
@@ -179,7 +301,28 @@ class Interviews extends BaseController
                 'limit'         => $this->request->getGet('limit') ?? 20
             ];
 
-            $result = $this->interviewModel->searchInterviews($filters, $user->id, $user->role);
+            // ✅ COMPANY SCOPING: Get companyId for non-admin users
+            $companyId = null;
+            if (!$this->isAdminRole($user->role ?? '')) {
+                $companyId = $this->getCompanyIdForEmployerUser($user);
+                if (!$companyId) {
+                    return $this->respond([
+                        'success' => true,
+                        'message' => 'Interviews retrieved successfully',
+                        'data'    => [
+                            'interviews' => [],
+                            'pagination' => [
+                                'total' => 0,
+                                'page' => 1,
+                                'limit' => $filters['limit'],
+                                'totalPages' => 0
+                            ]
+                        ]
+                    ]);
+                }
+            }
+
+            $result = $this->searchInterviewsScoped($filters, $user, $companyId);
 
             $response = [
                 'success' => true,
@@ -216,7 +359,12 @@ class Interviews extends BaseController
         }
 
         try {
-            $interview = $this->interviewModel->getInterviewWithDetails($id, $user->id, $user->role);
+            // ✅ AUTHZ
+            [$ok, $resp] = $this->authorizeInterviewAccess($id);
+            if (!$ok)
+                return $resp;
+
+            $interview = $this->getInterviewWithDetailsScoped($id, $user);
 
             if (!$interview) {
                 return $this->failNotFound('Interview not found');
@@ -257,30 +405,14 @@ class Interviews extends BaseController
         }
 
         try {
+            // ✅ AUTHZ
+            [$ok, $resp] = $this->authorizeInterviewAccess($id);
+            if (!$ok)
+                return $resp;
+
             $interview = $this->interviewModel->find($id);
             if (!$interview) {
                 return $this->failNotFound('Interview not found');
-            }
-
-            $canUpdate = false;
-            if (in_array($user->role, ['SUPER_ADMIN', 'HR_MANAGER'])) {
-                $canUpdate = true;
-            } elseif ($user->role === 'EMPLOYER') {
-                $employerProfile = $this->db->table('employer_profiles')
-                    ->where('userId', $user->id)
-                    ->get()
-                    ->getRowArray();
-
-                if ($employerProfile) {
-                    $job = $this->db->table('jobs')->where('id', $interview['jobId'])->get()->getRowArray();
-                    if ($job && $job['companyId'] === $employerProfile['companyId']) {
-                        $canUpdate = true;
-                    }
-                }
-            }
-
-            if (!$canUpdate) {
-                return $this->fail('You do not have permission to update this interview', 403);
             }
 
             $data = $this->request->getJSON(true);
@@ -308,11 +440,11 @@ class Interviews extends BaseController
                     'notes'       => "Status changed from {$oldStatus} to {$data['status']}"
                 ]);
 
-                $interview = $this->interviewModel->getInterviewWithDetails($id, $user->id, $user->role);
+                $interview = $this->getInterviewWithDetailsScoped($id, $user);
                 $this->sendInterviewNotification($interview, 'status_changed');
             }
 
-            $updated = $this->interviewModel->getInterviewWithDetails($id, $user->id, $user->role);
+            $updated = $this->getInterviewWithDetailsScoped($id, $user);
 
             $response = [
                 'success' => true,
@@ -349,30 +481,14 @@ class Interviews extends BaseController
         }
 
         try {
+            // ✅ AUTHZ
+            [$ok, $resp] = $this->authorizeInterviewAccess($id);
+            if (!$ok)
+                return $resp;
+
             $interview = $this->interviewModel->find($id);
             if (!$interview) {
                 return $this->failNotFound('Interview not found');
-            }
-
-            $canDelete = false;
-            if (in_array($user->role, ['SUPER_ADMIN', 'HR_MANAGER'])) {
-                $canDelete = true;
-            } elseif ($user->role === 'EMPLOYER') {
-                $employerProfile = $this->db->table('employer_profiles')
-                    ->where('userId', $user->id)
-                    ->get()
-                    ->getRowArray();
-
-                if ($employerProfile) {
-                    $job = $this->db->table('jobs')->where('id', $interview['jobId'])->get()->getRowArray();
-                    if ($job && $job['companyId'] === $employerProfile['companyId']) {
-                        $canDelete = true;
-                    }
-                }
-            }
-
-            if (!$canDelete) {
-                return $this->fail('You do not have permission to delete this interview', 403);
             }
 
             $this->interviewModel->delete($id);
@@ -414,13 +530,21 @@ class Interviews extends BaseController
                 return $this->fail('New status is required', 400);
             }
 
-            $interviews = $this->interviewModel->whereIn('id', $data['interviewIds'])->findAll();
-            if (count($interviews) !== count($data['interviewIds'])) {
-                return $this->fail('Some interviews not found', 404);
-            }
+            $updated = 0;
 
             foreach ($data['interviewIds'] as $interviewId) {
+                // ✅ AUTHZ per interview
+                [$ok, $resp] = $this->authorizeInterviewAccess($interviewId);
+                if (!$ok) {
+                    // skip unauthorized IDs silently
+                    continue;
+                }
+
                 $interview = $this->interviewModel->find($interviewId);
+                if (!$interview) {
+                    continue;
+                }
+
                 $oldStatus = $interview['status'];
 
                 $this->interviewModel->update($interviewId, ['status' => $data['newStatus']]);
@@ -432,12 +556,14 @@ class Interviews extends BaseController
                     'changedBy'   => $user->id,
                     'reason'      => $data['reason'] ?? "Bulk status update to {$data['newStatus']}"
                 ]);
+
+                $updated++;
             }
 
             return $this->respond([
                 'success' => true,
-                'message' => count($data['interviewIds']) . ' interview(s) updated successfully',
-                'data'    => ['count' => count($data['interviewIds'])]
+                'message' => count($data['interviewIds']) . ' interview(s) processed, ' . $updated . ' updated successfully',
+                'data'    => ['count' => $updated]
             ]);
         } catch (\Exception $e) {
             log_message('error', 'Bulk update failed: ' . $e->getMessage());
@@ -467,7 +593,12 @@ class Interviews extends BaseController
         }
 
         try {
-            $interview = $this->interviewModel->getInterviewWithDetails($id, $user->id, $user->role);
+            // ✅ AUTHZ
+            [$ok, $resp] = $this->authorizeInterviewAccess($id);
+            if (!$ok)
+                return $resp;
+
+            $interview = $this->getInterviewWithDetailsScoped($id, $user);
             if (!$interview) {
                 return $this->failNotFound('Interview not found');
             }
@@ -515,7 +646,20 @@ class Interviews extends BaseController
         }
 
         try {
-            $interviews = $this->interviewModel->getUpcomingInterviews($user->id, $user->role);
+            // ✅ COMPANY SCOPING
+            $companyId = null;
+            if (!$this->isAdminRole($user->role ?? '')) {
+                $companyId = $this->getCompanyIdForEmployerUser($user);
+                if (!$companyId) {
+                    return $this->respond([
+                        'success' => true,
+                        'message' => 'Upcoming interviews retrieved successfully',
+                        'data'    => []
+                    ]);
+                }
+            }
+
+            $interviews = $this->getUpcomingInterviewsScoped($user, $companyId);
 
             $response = [
                 'success' => true,
@@ -547,7 +691,26 @@ class Interviews extends BaseController
         }
 
         try {
-            $stats = $this->interviewModel->getStatistics($user->id, $user->role);
+            // ✅ COMPANY SCOPING
+            $companyId = null;
+            if (!$this->isAdminRole($user->role ?? '')) {
+                $companyId = $this->getCompanyIdForEmployerUser($user);
+                if (!$companyId) {
+                    return $this->respond([
+                        'success' => true,
+                        'message' => 'Statistics retrieved successfully',
+                        'data'    => [
+                            'total' => 0,
+                            'scheduled' => 0,
+                            'completed' => 0,
+                            'cancelled' => 0,
+                            'in_progress' => 0
+                        ]
+                    ]);
+                }
+            }
+
+            $stats = $this->getStatisticsScoped($user, $companyId);
 
             $response = [
                 'success' => true,
@@ -559,6 +722,328 @@ class Interviews extends BaseController
         } catch (\Exception $e) {
             log_message('error', 'Get statistics failed: ' . $e->getMessage());
             return $this->fail('Failed to retrieve statistics', 500);
+        }
+    }
+
+    // ============================================================
+    // COMPANY-SCOPED DATA RETRIEVAL METHODS
+    // ============================================================
+
+    /**
+     * Get interview with details (company-scoped)
+     */
+    private function getInterviewWithDetailsScoped($interviewId, $user)
+    {
+        try {
+            $db = \Config\Database::connect();
+            $builder = $db->table('interviews');
+
+            $builder->select('interviews.*, 
+                users.id as candidate_id, users.firstName as candidate_firstName, users.lastName as candidate_lastName, 
+                users.email as candidate_email, users.phone as candidate_phone, users.avatar as candidate_avatar,
+                jobs.id as job_id, jobs.title as job_title,
+                companies.id as company_id, companies.name as company_name, companies.logo as company_logo')
+                ->join('users', 'users.id = interviews.candidateId', 'left')
+                ->join('jobs', 'jobs.id = interviews.jobId', 'left')
+                ->join('companies', 'companies.id = jobs.companyId', 'left')
+                ->where('interviews.id', $interviewId);
+
+            // ✅ Company filter for non-admins
+            if (!$this->isAdminRole($user->role ?? '')) {
+                $companyId = $this->getCompanyIdForEmployerUser($user);
+                if (!$companyId)
+                    return null;
+                $builder->where('jobs.companyId', $companyId);
+            }
+
+            $row = $builder->get()->getRowArray();
+
+            if (!$row)
+                return null;
+
+            return [
+                'id' => $row['id'],
+                'applicationId' => $row['applicationId'],
+                'jobId' => $row['jobId'],
+                'candidateId' => $row['candidateId'],
+                'scheduledAt' => $row['scheduledAt'],
+                'duration' => $row['duration'],
+                'status' => $row['status'],
+                'type' => $row['type'],
+                'location' => $row['location'] ?? null,
+                'meetingLink' => $row['meetingLink'] ?? null,
+                'meetingId' => $row['meetingId'] ?? null,
+                'meetingPassword' => $row['meetingPassword'] ?? null,
+                'interviewerName' => $row['interviewerName'] ?? null,
+                'interviewerId' => $row['interviewerId'] ?? null,
+                'notes' => $row['notes'] ?? null,
+                'reminderSent' => (bool)($row['reminderSent'] ?? false),
+                'createdBy' => $row['createdBy'] ?? null,
+                'createdAt' => $row['createdAt'] ?? null,
+                'updatedAt' => $row['updatedAt'] ?? null,
+                'candidate' => [
+                    'id' => $row['candidate_id'],
+                    'firstName' => $row['candidate_firstName'] ?? '',
+                    'lastName' => $row['candidate_lastName'] ?? '',
+                    'email' => $row['candidate_email'] ?? '',
+                    'phone' => $row['candidate_phone'] ?? null,
+                    'avatar' => $row['candidate_avatar'] ?? null
+                ],
+                'job' => [
+                    'id' => $row['job_id'],
+                    'title' => $row['job_title'] ?? '',
+                    'company' => [
+                        'id' => $row['company_id'] ?? '',
+                        'name' => $row['company_name'] ?? '',
+                        'logo' => $row['company_logo'] ?? null
+                    ]
+                ]
+            ];
+        } catch (\Exception $e) {
+            log_message('error', 'getInterviewWithDetailsScoped error: ' . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Search interviews (company-scoped)
+     */
+    private function searchInterviewsScoped($filters, $user, $companyId = null)
+    {
+        try {
+            $db = \Config\Database::connect();
+            $builder = $db->table('interviews');
+
+            $builder->select('interviews.*, 
+                users.id as candidate_id, users.firstName as candidate_firstName, users.lastName as candidate_lastName, 
+                users.email as candidate_email, users.phone as candidate_phone,
+                jobs.id as job_id, jobs.title as job_title,
+                companies.id as company_id, companies.name as company_name')
+                ->join('users', 'users.id = interviews.candidateId', 'left')
+                ->join('jobs', 'jobs.id = interviews.jobId', 'left')
+                ->join('companies', 'companies.id = jobs.companyId', 'left');
+
+            // ✅ Company filter
+            if ($companyId) {
+                $builder->where('jobs.companyId', $companyId);
+            }
+
+            // Apply filters
+            if (!empty($filters['status'])) {
+                $builder->where('interviews.status', $filters['status']);
+            }
+
+            if (!empty($filters['type'])) {
+                $builder->where('interviews.type', $filters['type']);
+            }
+
+            if (!empty($filters['jobId'])) {
+                $builder->where('interviews.jobId', $filters['jobId']);
+            }
+
+            if (!empty($filters['candidateId'])) {
+                $builder->where('interviews.candidateId', $filters['candidateId']);
+            }
+
+            if (!empty($filters['interviewerId'])) {
+                $builder->where('interviews.interviewerId', $filters['interviewerId']);
+            }
+
+            if (!empty($filters['startDate'])) {
+                $builder->where('interviews.scheduledAt >=', $filters['startDate']);
+            }
+
+            if (!empty($filters['endDate'])) {
+                $builder->where('interviews.scheduledAt <=', $filters['endDate']);
+            }
+
+            if (!empty($filters['query'])) {
+                $builder->groupStart()
+                    ->like('users.firstName', $filters['query'])
+                    ->orLike('users.lastName', $filters['query'])
+                    ->orLike('users.email', $filters['query'])
+                    ->orLike('jobs.title', $filters['query'])
+                    ->groupEnd();
+            }
+
+            // Get total count
+            $total = $builder->countAllResults(false);
+
+            // Get paginated results
+            $page = (int)($filters['page'] ?? 1);
+            $limit = (int)($filters['limit'] ?? 20);
+            $skip = ($page - 1) * $limit;
+
+            $interviews = $builder
+                ->orderBy('interviews.scheduledAt', 'DESC')
+                ->limit($limit, $skip)
+                ->get()
+                ->getResultArray();
+
+            $formattedInterviews = array_map(function($row) {
+                return [
+                    'id' => $row['id'],
+                    'applicationId' => $row['applicationId'],
+                    'jobId' => $row['jobId'],
+                    'candidateId' => $row['candidateId'],
+                    'scheduledAt' => $row['scheduledAt'],
+                    'duration' => $row['duration'],
+                    'status' => $row['status'],
+                    'type' => $row['type'],
+                    'location' => $row['location'] ?? null,
+                    'meetingLink' => $row['meetingLink'] ?? null,
+                    'interviewerName' => $row['interviewerName'] ?? null,
+                    'notes' => $row['notes'] ?? null,
+                    'reminderSent' => (bool)($row['reminderSent'] ?? false),
+                    'createdAt' => $row['createdAt'] ?? null,
+                    'candidate' => [
+                        'id' => $row['candidate_id'],
+                        'firstName' => $row['candidate_firstName'] ?? '',
+                        'lastName' => $row['candidate_lastName'] ?? '',
+                        'email' => $row['candidate_email'] ?? '',
+                        'phone' => $row['candidate_phone'] ?? null
+                    ],
+                    'job' => [
+                        'id' => $row['job_id'],
+                        'title' => $row['job_title'] ?? ''
+                    ],
+                    'company' => [
+                        'id' => $row['company_id'] ?? '',
+                        'name' => $row['company_name'] ?? ''
+                    ]
+                ];
+            }, $interviews);
+
+            return [
+                'interviews' => $formattedInterviews,
+                'pagination' => [
+                    'total' => $total,
+                    'page' => $page,
+                    'limit' => $limit,
+                    'totalPages' => ceil($total / $limit)
+                ]
+            ];
+        } catch (\Exception $e) {
+            log_message('error', 'searchInterviewsScoped error: ' . $e->getMessage());
+            return [
+                'interviews' => [],
+                'pagination' => [
+                    'total' => 0,
+                    'page' => 1,
+                    'limit' => 20,
+                    'totalPages' => 0
+                ]
+            ];
+        }
+    }
+
+    /**
+     * Get upcoming interviews (company-scoped)
+     */
+    private function getUpcomingInterviewsScoped($user, $companyId = null)
+    {
+        try {
+            $db = \Config\Database::connect();
+            $builder = $db->table('interviews');
+
+            $builder->select('interviews.*, 
+                users.id as candidate_id, users.firstName as candidate_firstName, users.lastName as candidate_lastName, 
+                users.email as candidate_email,
+                jobs.id as job_id, jobs.title as job_title')
+                ->join('users', 'users.id = interviews.candidateId', 'left')
+                ->join('jobs', 'jobs.id = interviews.jobId', 'left');
+
+            // ✅ Company filter
+            if ($companyId) {
+                $builder->join('companies', 'companies.id = jobs.companyId', 'left')
+                    ->where('jobs.companyId', $companyId);
+            }
+
+            $builder->where('interviews.scheduledAt >=', date('Y-m-d H:i:s'))
+                ->whereIn('interviews.status', ['SCHEDULED', 'IN_PROGRESS'])
+                ->orderBy('interviews.scheduledAt', 'ASC')
+                ->limit(10);
+
+            $rows = $builder->get()->getResultArray();
+
+            return array_map(function($row) {
+                return [
+                    'id' => $row['id'],
+                    'scheduledAt' => $row['scheduledAt'],
+                    'duration' => $row['duration'],
+                    'status' => $row['status'],
+                    'type' => $row['type'],
+                    'location' => $row['location'] ?? null,
+                    'meetingLink' => $row['meetingLink'] ?? null,
+                    'candidate' => [
+                        'id' => $row['candidate_id'],
+                        'firstName' => $row['candidate_firstName'] ?? '',
+                        'lastName' => $row['candidate_lastName'] ?? '',
+                        'email' => $row['candidate_email'] ?? ''
+                    ],
+                    'job' => [
+                        'id' => $row['job_id'],
+                        'title' => $row['job_title'] ?? ''
+                    ]
+                ];
+            }, $rows);
+        } catch (\Exception $e) {
+            log_message('error', 'getUpcomingInterviewsScoped error: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Get statistics (company-scoped)
+     */
+    private function getStatisticsScoped($user, $companyId = null)
+    {
+        try {
+            $db = \Config\Database::connect();
+            $builder = $db->table('interviews');
+
+            $builder->select('interviews.status, COUNT(*) as count')
+                ->join('jobs', 'jobs.id = interviews.jobId', 'inner');
+
+            // ✅ Company filter
+            if ($companyId) {
+                $builder->where('jobs.companyId', $companyId);
+            }
+
+            $builder->groupBy('interviews.status');
+
+            $rows = $builder->get()->getResultArray();
+
+            $stats = [
+                'total' => 0,
+                'scheduled' => 0,
+                'completed' => 0,
+                'cancelled' => 0,
+                'in_progress' => 0,
+                'no_show' => 0
+            ];
+
+            foreach ($rows as $row) {
+                $status = strtolower($row['status'] ?? '');
+                $count = (int)($row['count'] ?? 0);
+                $stats['total'] += $count;
+
+                if (isset($stats[$status])) {
+                    $stats[$status] = $count;
+                }
+            }
+
+            return $stats;
+        } catch (\Exception $e) {
+            log_message('error', 'getStatisticsScoped error: ' . $e->getMessage());
+            return [
+                'total' => 0,
+                'scheduled' => 0,
+                'completed' => 0,
+                'cancelled' => 0,
+                'in_progress' => 0,
+                'no_show' => 0
+            ];
         }
     }
 
