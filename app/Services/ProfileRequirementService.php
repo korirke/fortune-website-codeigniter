@@ -132,7 +132,7 @@ class ProfileRequirementService
                     ->countAllResults() > 0;
 
             case 'MEMBERSHIPS':
-                return $db->table('candidate_memberships')
+                return $db->table('candidate_professional_memberships')
                     ->where('candidateId', $profile['id'])
                     ->countAllResults() > 0;
 
