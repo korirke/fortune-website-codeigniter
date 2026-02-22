@@ -61,41 +61,67 @@ class Candidate extends BaseController
     /**
      * Get Profile 
      */
-    public function getProfile()
-    {
-        try {
-            $user = $this->request->user ?? null;
-            if (!$user) {
-                return $this->fail('Unauthorized', 401);
+public function getProfile()
+{
+    try {
+        $user = $this->request->user ?? null;
+        if (!$user) {
+            return $this->fail('Unauthorized', 401);
+        }
+
+        $profileModel = new CandidateProfile();
+        $profile = $profileModel->where('userId', $user->id)->first();
+
+        if (!$profile) {
+            return $this->failNotFound('Candidate profile not found');
+        }
+
+        // =========================================================
+        // ✅ INCLUDE FILTERING (BACKWARD COMPATIBLE)
+        // =========================================================
+        $includeParam = $this->request->getGet('include');
+        $includeAll = ($includeParam === null || trim((string) $includeParam) === '');
+        $include = [];
+
+        if (!$includeAll) {
+            $parts = explode(',', $includeParam);
+            foreach ($parts as $p) {
+                $p = trim($p);
+                if ($p !== '') $include[$p] = true;
             }
+        }
 
-            $profileModel = new CandidateProfile();
-            $profile = $profileModel->where('userId', $user->id)->first();
+        // helper
+        $wants = function (string $key) use ($includeAll, $include) {
+            if ($includeAll) return true;
+            return isset($include[$key]);
+        };
+        // =========================================================
 
-            if (!$profile) {
-                return $this->failNotFound('Candidate profile not found');
-            }
+        // Get user data INCLUDING PHONE
+        $userModel = new User();
+        $userData = $userModel->select('id, email, firstName, lastName, phone, avatar, emailVerified, createdAt')
+            ->find($user->id);
 
-            // Get user data INCLUDING PHONE
-            $userModel = new User();
-            $userData = $userModel->select('id, email, firstName, lastName, phone, avatar, emailVerified, createdAt')
-                ->find($user->id);
+        if (!$userData) {
+            return $this->failNotFound('User not found');
+        }
 
-            if (!$userData) {
-                return $this->failNotFound('User not found');
-            }
+        // Calculate experience years
+        $profile['experienceYears'] = $profile['experienceYears'] ?? '0 years';
+        $profile['totalExperienceMonths'] = (int) ($profile['totalExperienceMonths'] ?? 0);
 
-            // Calculate experience years
-            $profile['experienceYears'] = $profile['experienceYears'] ?? '0 years';
-            $profile['totalExperienceMonths'] = (int) ($profile['totalExperienceMonths'] ?? 0);
-            // Get skills with skill details
+        // =========================================================
+        // Skills 
+        // =========================================================
+        $skills = [];
+        if ($wants('skills')) {
             $candidateSkillModel = new CandidateSkill();
             $candidateSkills = $candidateSkillModel->where('candidateId', $profile['id'])
                 ->orderBy('createdAt', 'DESC')
                 ->findAll();
 
             $skillModel = new Skill();
-            $skills = [];
             foreach ($candidateSkills as $cs) {
                 $skill = $skillModel->find($cs['skillId']);
                 if ($skill) {
@@ -110,15 +136,19 @@ class Candidate extends BaseController
                     ];
                 }
             }
+        }
 
-            // Get domains with domain details
+        // =========================================================
+        // Domains
+        // =========================================================
+        $domains = [];
+        if ($wants('domains')) {
             $candidateDomainModel = new CandidateDomain();
             $candidateDomains = $candidateDomainModel->where('candidateId', $profile['id'])
                 ->orderBy('isPrimary', 'DESC')
                 ->findAll();
 
             $domainModel = new Domain();
-            $domains = [];
             foreach ($candidateDomains as $cd) {
                 $domain = $domainModel->find($cd['domainId']);
                 if ($domain) {
@@ -132,130 +162,188 @@ class Candidate extends BaseController
                     ];
                 }
             }
+        }
 
-            // Get educations
+        // =========================================================
+        // Educations
+        // =========================================================
+        $educations = [];
+        if ($wants('educations')) {
             $educationModel = new Education();
             $educations = $educationModel->where('candidateId', $profile['id'])
                 ->orderBy('startDate', 'DESC')
                 ->findAll();
+        }
 
-            // Get experiences
+        // =========================================================
+        // Experiences
+        // =========================================================
+        $experiences = [];
+        if ($wants('experiences')) {
             $experienceModel = new Experience();
             $experiences = $experienceModel->where('candidateId', $profile['id'])
                 ->orderBy('startDate', 'DESC')
                 ->findAll();
+        }
 
-            // Get certifications
-            $certificationModel = new \App\Models\Certification();
-            $certifications = $certificationModel->where('candidateId', $profile['id'])
-                ->orderBy('issueDate', 'DESC')
-                ->findAll();
+        // =========================================================
+        // Certifications
+        // =========================================================
+        $certificationModel = new \App\Models\Certification();
+        $certifications = $certificationModel->where('candidateId', $profile['id'])
+            ->orderBy('issueDate', 'DESC')
+            ->findAll();
 
-            // Get languages
-            $languages = [];
-            try {
-                $candidateLanguageModel = new \App\Models\CandidateLanguage();
-                $candidateLanguages = $candidateLanguageModel->where('candidateId', $profile['id'])->findAll();
+        // =========================================================
+        // Languages
+        // =========================================================
+        $languages = [];
+        try {
+            $candidateLanguageModel = new \App\Models\CandidateLanguage();
+            $candidateLanguages = $candidateLanguageModel->where('candidateId', $profile['id'])->findAll();
 
-                $languageModel = new \App\Models\Language();
-                foreach ($candidateLanguages as $cl) {
-                    $language = $languageModel->find($cl['languageId'] ?? null);
-                    if ($language) {
-                        $languages[] = [
-                            'id' => $cl['id'] ?? null,
-                            'candidateId' => $cl['candidateId'] ?? null,
-                            'languageId' => $cl['languageId'] ?? null,
-                            'proficiency' => $cl['proficiency'] ?? null,
-                            'createdAt' => $cl['createdAt'] ?? null,
-                            'language' => $language
-                        ];
-                    }
+            $languageModel = new \App\Models\Language();
+            foreach ($candidateLanguages as $cl) {
+                $language = $languageModel->find($cl['languageId'] ?? null);
+                if ($language) {
+                    $languages[] = [
+                        'id' => $cl['id'] ?? null,
+                        'candidateId' => $cl['candidateId'] ?? null,
+                        'languageId' => $cl['languageId'] ?? null,
+                        'proficiency' => $cl['proficiency'] ?? null,
+                        'createdAt' => $cl['createdAt'] ?? null,
+                        'language' => $language
+                    ];
                 }
-            } catch (\Exception $e) {
-                $languages = [];
             }
+        } catch (\Exception $e) {
+            $languages = [];
+        }
 
-            // Get resumes (latest 5)
+        // =========================================================
+        // Resumes
+        // =========================================================
+        $resumes = [];
+        if ($wants('resumes')) {
             $resumeModel = new ResumeVersion();
             $resumes = $resumeModel->where('candidateId', $profile['id'])
                 ->orderBy('version', 'DESC')
                 ->limit(5)
                 ->findAll();
+        }
 
-            // Publications
+        // =========================================================
+        // Publications
+        // =========================================================
+        $publications = [];
+        if ($wants('publications')) {
             $pubModel = new \App\Models\CandidatePublication();
             $publications = $pubModel->where('candidateId', $profile['id'])
                 ->orderBy('year', 'DESC')
                 ->findAll();
+        }
 
-            // Memberships
+        // =========================================================
+        // Memberships
+        // =========================================================
+        $memberships = [];
+        if ($wants('memberships')) {
             $memModel = new \App\Models\CandidateMembership();
             $memberships = $memModel->where('candidateId', $profile['id'])
                 ->orderBy('createdAt', 'DESC')
                 ->findAll();
+        }
 
-            // Clearances
+        // =========================================================
+        // Clearances
+        // =========================================================
+        $clearances = [];
+        if ($wants('clearances')) {
             $clearModel = new \App\Models\CandidateClearance();
             $clearances = $clearModel->where('candidateId', $profile['id'])
                 ->orderBy('issueDate', 'DESC')
                 ->findAll();
+        }
 
-            // Courses
+        // =========================================================
+        // Courses
+        // =========================================================
+        $courses = [];
+        if ($wants('courses')) {
             $courseModel = new \App\Models\CandidateCourse();
             $courses = $courseModel->where('candidateId', $profile['id'])
                 ->orderBy('year', 'DESC')
                 ->findAll();
+        }
 
-            // Referees
+        // =========================================================
+        // Referees
+        // =========================================================
+        $referees = [];
+        if ($wants('referees')) {
             $refModel = new \App\Models\CandidateReferee();
             $referees = $refModel->where('candidateId', $profile['id'])
                 ->orderBy('createdAt', 'DESC')
                 ->findAll();
+        }
 
-            // Personal info
+        // =========================================================
+        // Personal info
+        // =========================================================
+        $personalInfo = null;
+        if ($wants('personalInfo')) {
             $pinfoModel = new \App\Models\CandidatePersonalInfo();
             $personalInfo = $pinfoModel->where('candidateId', $profile['id'])->first();
+        }
 
-            // Candidate files
+        // =========================================================
+        // Candidate files
+        // =========================================================
+        $files = [];
+        if ($wants('files')) {
             $fileModel = new \App\Models\CandidateFile();
             $files = $fileModel->where('candidateId', $profile['id'])
                 ->orderBy('createdAt', 'DESC')
                 ->findAll();
-
-            // Build response 
-            $profileData = $profile;
-            $profileData['user'] = $userData;
-            $profileData['skills'] = $skills;
-            $profileData['domains'] = $domains;
-            $profileData['educations'] = $educations;
-            $profileData['experiences'] = $experiences;
-            $profileData['certifications'] = $certifications;
-            $profileData['languages'] = $languages;
-            $profileData['resumes'] = $resumes;
-            $profileData['publications'] = $publications;
-            $profileData['memberships'] = $memberships;
-            $profileData['clearances'] = $clearances;
-            $profileData['courses'] = $courses;
-            $profileData['referees'] = $referees;
-            $profileData['personalInfo'] = $personalInfo;
-            $profileData['files'] = $files;
-
-            return $this->respond([
-                'success' => true,
-                'message' => 'Profile retrieved successfully',
-                'data' => $profileData
-            ]);
-        } catch (\Exception $e) {
-            log_message('error', 'Failed to retrieve candidate profile: ' . $e->getMessage());
-            log_message('error', 'Stack trace: ' . $e->getTraceAsString());
-
-            return $this->respond([
-                'success' => false,
-                'message' => 'Failed to retrieve profile: ' . $e->getMessage(),
-                'data' => []
-            ], 500);
         }
+
+        // Build response
+        $profileData = $profile;
+        $profileData['user'] = $userData;
+
+        // Always assign (even if empty) => frontend stable
+        $profileData['skills'] = $skills;
+        $profileData['domains'] = $domains;
+        $profileData['educations'] = $educations;
+        $profileData['experiences'] = $experiences;
+        $profileData['certifications'] = $certifications;
+        $profileData['languages'] = $languages;
+        $profileData['resumes'] = $resumes;
+        $profileData['publications'] = $publications;
+        $profileData['memberships'] = $memberships;
+        $profileData['clearances'] = $clearances;
+        $profileData['courses'] = $courses;
+        $profileData['referees'] = $referees;
+        $profileData['personalInfo'] = $personalInfo;
+        $profileData['files'] = $files;
+
+        return $this->respond([
+            'success' => true,
+            'message' => 'Profile retrieved successfully',
+            'data' => $profileData
+        ]);
+    } catch (\Exception $e) {
+        log_message('error', 'Failed to retrieve candidate profile: ' . $e->getMessage());
+        log_message('error', 'Stack trace: ' . $e->getTraceAsString());
+
+        return $this->respond([
+            'success' => false,
+            'message' => 'Failed to retrieve profile: ' . $e->getMessage(),
+            'data' => []
+        ], 500);
     }
+}
+
 
     /**
      * @OA\Put(
