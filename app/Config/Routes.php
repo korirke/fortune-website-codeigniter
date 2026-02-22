@@ -71,6 +71,9 @@ $routes->group('api/jobs', ['namespace' => 'App\Controllers\Jobs'], function ($r
     $routes->put('(:segment)/profile-requirements', 'JobProfileRequirements::upsert/$1', ['filter' => 'auth']);
 
     $routes->get('(:segment)/profile-eligibility', 'JobProfileEligibility::get/$1', ['filter' => 'auth']);
+
+    $routes->get('(:segment)/application-pipeline', 'JobApplicationPipeline::getApplicationFormData/$1', ['filter' => 'auth']);
+    $routes->post('(:segment)/application-pipeline/submit', 'JobApplicationPipeline::submitWithInlineUpdates/$1', ['filter' => 'auth']);
 });
 
 // Public Routes 
@@ -117,6 +120,14 @@ $routes->group('api/auth', ['namespace' => 'App\Controllers\Auth'], function ($r
     $routes->post('forgot-password', 'Auth::forgotPassword');
     $routes->post('reset-password', 'Auth::resetPassword');
     $routes->get('me', 'Auth::getMe', ['filter' => 'auth']);
+});
+
+$routes->group('api/profile-field-settings', ['namespace' => 'App\Controllers\Settings'], function ($routes) {
+    // Public
+    $routes->get('', 'ProfileFieldSettings::index');
+
+    // Admin write
+    $routes->patch('bulk', 'ProfileFieldSettings::bulkUpdate', ['filter' => 'auth']);
 });
 
 // Candidate Routes 
