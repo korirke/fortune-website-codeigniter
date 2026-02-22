@@ -15,7 +15,10 @@ class ProfileRequirementService
         $m = new JobProfileRequirement();
         $rows = $m->where('jobId', $jobId)->where('isRequired', 1)->findAll();
 
+        log_message('debug', 'JobProfileRequirement rows: ' . json_encode($rows));
+
         return array_values(array_map(fn($r) => $r['requirementKey'], $rows));
+        
     }
 
     /**
