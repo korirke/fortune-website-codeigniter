@@ -54,12 +54,18 @@ class Auth extends BaseController
         // Check if email exists
         $existingUser = $userModel->where('email', $data['email'])->first();
         if ($existingUser) {
-            return $this->fail('Email already exists', 409);
+            return $this->respond([
+                'success' => false,
+                'message' => 'Email already exists'
+            ], 409);
         }
 
         // Prevent admin role registration
         if (isset($data['role']) && in_array($data['role'], ['SUPER_ADMIN', 'MODERATOR', 'HR_MANAGER', 'WEBSITE_ADMIN'])) {
-            return $this->fail('Cannot register with admin role', 403);
+            return $this->respond([
+                'success' => false,
+                'message' => 'Cannot register with admin role'
+            ], 403);
         }
 
         // Hash password
@@ -68,22 +74,22 @@ class Auth extends BaseController
         $data['role'] = $data['role'] ?? 'CANDIDATE';
         $data['status'] = $data['status'] ?? 'PENDING_VERIFICATION';
         $data['emailVerified'] = false;
-        
+
         // Generate verification token
         $verificationToken = bin2hex(random_bytes(32));
         $data['resetPasswordToken'] = $verificationToken;
         $data['resetPasswordExpires'] = date('Y-m-d H:i:s', strtotime('+24 hours'));
 
         $userModel->insert($data);
-        
-         if ($data['role'] === 'CANDIDATE') {
-        $candidateProfileModel = new CandidateProfile();
-        $candidateProfileModel->insert([
-            'id' => uniqid('cprofile_'),
-            'userId' => $data['id'],
-            'openToWork' => true
-        ]);
-    }
+
+        if ($data['role'] === 'CANDIDATE') {
+            $candidateProfileModel = new CandidateProfile();
+            $candidateProfileModel->insert([
+                'id' => uniqid('cprofile_'),
+                'userId' => $data['id'],
+                'openToWork' => true
+            ]);
+        }
 
         // Send verification email (non-blocking)
         try {
@@ -100,7 +106,7 @@ class Auth extends BaseController
         // Get created user (without password)
         $createdUser = $userModel->select('id, email, firstName, lastName, role, status, createdAt')
             ->find($data['id']);
-        
+
         return $this->respondCreated([
             'success' => true,
             'message' => 'Registration successful! Please check your email to verify your account.',
@@ -172,7 +178,7 @@ class Auth extends BaseController
                 ]
             ], 400);
         }
-        
+
         // Determine redirect URL based on role
         $redirectUrl = '/careers-portal';
         if ($user['role'] === 'EMPLOYER') {
@@ -192,7 +198,7 @@ class Auth extends BaseController
         } elseif ($user['role'] === 'WEBSITE_ADMIN') {
             $redirectUrl = '/dashboard';
         }
-        
+
         // Check if company setup is required
         $requiresCompanySetup = false;
         if ($user['role'] === 'EMPLOYER') {
@@ -200,7 +206,7 @@ class Auth extends BaseController
             $employerProfile = $employerProfileModel->where('userId', $user['id'])->first();
             $requiresCompanySetup = !$employerProfile;
         }
-        
+
         return $this->respond([
             'success' => true,
             'message' => 'Login successful',
@@ -242,20 +248,20 @@ class Auth extends BaseController
     {
         $data = $this->request->getJSON(true);
         $token = $data['token'] ?? $this->request->getGet('token');
-        
+
         if (!$token) {
             return $this->fail('Verification token is required', 400);
         }
-        
+
         $userModel = new User();
         $user = $userModel->where('resetPasswordToken', $token)
             ->where('resetPasswordExpires >', date('Y-m-d H:i:s'))
             ->first();
-        
+
         if (!$user) {
             return $this->fail('Invalid or expired verification token', 400);
         }
-        
+
         // Verify email
         $userModel->update($user['id'], [
             'emailVerified' => true,
@@ -263,7 +269,7 @@ class Auth extends BaseController
             'resetPasswordToken' => null,
             'resetPasswordExpires' => null
         ]);
-        
+
         return $this->respond([
             'success' => true,
             'message' => 'Email verified successfully! You can now log in to your account.'
@@ -289,26 +295,26 @@ class Auth extends BaseController
     {
         $data = $this->request->getJSON(true);
         $email = $data['email'] ?? null;
-        
+
         if (!$email) {
             return $this->fail('Email is required', 400);
         }
-        
+
         $userModel = new User();
         $user = $userModel->where('email', $email)->first();
-        
+
         $message = 'If an account exists with that email, password reset instructions have been sent.';
-        
+
         if ($user) {
             // Generate reset token
             $resetToken = bin2hex(random_bytes(32));
             $resetExpires = date('Y-m-d H:i:s', strtotime('+1 hour'));
-            
+
             $userModel->update($user['id'], [
                 'resetPasswordToken' => $resetToken,
                 'resetPasswordExpires' => $resetExpires
             ]);
-            
+
             // Send password reset email (non-blocking)
             try {
                 $emailHelper = new EmailHelper();
@@ -321,7 +327,7 @@ class Auth extends BaseController
                 log_message('error', 'Failed to send password reset email: ' . $e->getMessage());
             }
         }
-        
+
         // Always return same message for security (don't reveal if email exists)
         return $this->respond([
             'success' => true,
@@ -351,30 +357,30 @@ class Auth extends BaseController
         $data = $this->request->getJSON(true);
         $token = $data['token'] ?? null;
         $newPassword = $data['newPassword'] ?? $data['password'] ?? null;
-        
+
         if (!$token || !$newPassword) {
             return $this->fail('Token and new password are required', 400);
         }
-        
+
         $userModel = new User();
         $user = $userModel->where('resetPasswordToken', $token)
             ->where('resetPasswordExpires >', date('Y-m-d H:i:s'))
             ->first();
-        
+
         if (!$user) {
             return $this->fail('Invalid or expired reset token', 400);
         }
-        
+
         // Hash new password
         $hashedPassword = password_hash($newPassword, PASSWORD_DEFAULT);
-        
+
         // Update password and clear reset token
         $userModel->update($user['id'], [
             'password' => $hashedPassword,
             'resetPasswordToken' => null,
             'resetPasswordExpires' => null
         ]);
-        
+
         return $this->respond([
             'success' => true,
             'message' => 'Password reset successfully! You can now log in with your new password.'
