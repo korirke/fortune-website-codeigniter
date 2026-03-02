@@ -66,7 +66,6 @@ $routes->group('api/jobs', ['namespace' => 'App\Controllers\Jobs'], function ($r
     $routes->patch('(:segment)/moderate', 'Jobs::moderateJob/$1', ['filter' => 'auth']);
     $routes->patch('(:segment)/status/(:segment)', 'Jobs::changeJobStatus/$1/$2', ['filter' => 'auth']);
 
-
     $routes->get('(:segment)/profile-requirements', 'JobProfileRequirements::get/$1');
     $routes->put('(:segment)/profile-requirements', 'JobProfileRequirements::upsert/$1', ['filter' => 'auth']);
 
@@ -74,9 +73,15 @@ $routes->group('api/jobs', ['namespace' => 'App\Controllers\Jobs'], function ($r
 
     $routes->get('(:segment)/application-pipeline', 'JobApplicationPipeline::getApplicationFormData/$1', ['filter' => 'auth']);
     $routes->post('(:segment)/application-pipeline/submit', 'JobApplicationPipeline::submitWithInlineUpdates/$1', ['filter' => 'auth']);
+
+    $routes->get('(:segment)/questionnaire', 'JobQuestionnaire::get/$1');
+    $routes->put('(:segment)/questionnaire', 'JobQuestionnaire::upsert/$1', ['filter' => 'auth']);
+
+    $routes->get('(:segment)/application-config', 'JobProfileRequirements::getConfig/$1');
+    $routes->put('(:segment)/application-config', 'JobProfileRequirements::upsertConfig/$1', ['filter' => 'auth']);
 });
 
-// Public Routes 
+// Public Routes
 $routes->group('api', ['namespace' => 'App\Controllers\Public'], function ($routes) {
     $routes->get('navigation', 'PublicController::getNavigation');
     $routes->get('hero', 'Hero::getHeroData');
@@ -112,7 +117,7 @@ $routes->group('api', ['namespace' => 'App\Controllers\Public'], function ($rout
     $routes->get('companies/(:segment)', 'Companies::getCompanyBySlug');
 });
 
-// Authentication Routes 
+// Authentication Routes
 $routes->group('api/auth', ['namespace' => 'App\Controllers\Auth'], function ($routes) {
     $routes->post('register', 'Auth::register');
     $routes->post('login', 'Auth::login');
@@ -130,7 +135,7 @@ $routes->group('api/profile-field-settings', ['namespace' => 'App\Controllers\Se
     $routes->patch('bulk', 'ProfileFieldSettings::bulkUpdate', ['filter' => 'auth']);
 });
 
-// Candidate Routes 
+// Candidate Routes
 $routes->group('api/candidate', ['namespace' => 'App\Controllers\Candidate', 'filter' => 'auth'], function ($routes) {
     $routes->get('profile', 'Candidate::getProfile');
     $routes->put('profile', 'Candidate::updateProfile');
@@ -236,7 +241,7 @@ $routes->group('api/shortlist', ['namespace' => 'App\Controllers\Shortlist', 'fi
 });
 
 
-// Companies Routes 
+// Companies Routes
 $routes->group('api/companies', ['namespace' => 'App\Controllers\Companies'], function ($routes) {
     $routes->post('setup', 'Companies::setupCompany', ['filter' => 'auth']);
     $routes->get('me/profile', 'Companies::getMyCompany', ['filter' => 'auth']);
@@ -252,7 +257,7 @@ $routes->group('api/companies', ['namespace' => 'App\Controllers\Companies'], fu
     $routes->patch('admin/(:segment)/suspend', 'Companies::suspendCompany/$1', ['filter' => 'auth']);
 });
 
-// Contact Routes 
+// Contact Routes
 $routes->group('api/contact', ['namespace' => 'App\Controllers\Contact'], function ($routes) {
     $routes->post('submit', 'Contact::submitContact');
     $routes->get('', 'Contact::getAllInquiries', ['filter' => 'auth']);
@@ -262,7 +267,7 @@ $routes->group('api/contact', ['namespace' => 'App\Controllers\Contact'], functi
     $routes->delete('(:segment)', 'Contact::deleteInquiry/$1', ['filter' => 'auth']);
 });
 
-// FAQ Admin Routes 
+// FAQ Admin Routes
 $routes->group('api/faq', ['namespace' => 'App\Controllers\Faq'], function ($routes) {
     $routes->post('', 'Faq::createFaq', ['filter' => 'auth']);
     $routes->put('(:segment)', 'Faq::updateFaq', ['filter' => 'auth']);
@@ -274,7 +279,7 @@ $routes->group('api/faq', ['namespace' => 'App\Controllers\Faq'], function ($rou
     $routes->put('categories/reorder', 'Faq::reorderCategories', ['filter' => 'auth']);
 });
 
-// Upload Routes 
+// Upload Routes
 $routes->group('api/admin/upload', ['namespace' => 'App\Controllers\Upload'], function ($routes) {
     $routes->post('', 'Upload::uploadFile');
     $routes->post('multiple', 'Upload::uploadFiles');
@@ -284,7 +289,7 @@ $routes->group('api/admin/upload', ['namespace' => 'App\Controllers\Upload'], fu
     $routes->delete('(:segment)', 'Upload::deleteFile/$1');
 });
 
-// Admin Routes 
+// Admin Routes
 $routes->group('api/admin', ['namespace' => 'App\Controllers\Admin', 'filter' => 'auth'], function ($routes) {
     $routes->post('upload', 'Admin::uploadFile');
     $routes->delete('uploads/(:segment)', 'Admin::deleteUpload');
@@ -320,7 +325,7 @@ $routes->group('api/admin', ['namespace' => 'App\Controllers\Admin', 'filter' =>
     $routes->delete('contact-submissions/(:segment)', 'Admin::deleteContactSubmission');
 });
 
-// Admin Candidates Routes 
+// Admin Candidates Routes
 $routes->group('api/admin/candidates', ['namespace' => 'App\Controllers\AdminCandidate', 'filter' => 'auth'], function ($routes) {
     // IMPORTANT: Specific routes MUST come before parameterized routes
     $routes->get('stats', 'AdminCandidates::getCandidateStats');
@@ -338,7 +343,7 @@ $routes->group('admin/candidates', ['namespace' => 'App\Controllers\AdminCandida
     $routes->get('(:any)', 'AdminCandidates::getCandidateById/$1');
 });
 
-// Users Routes 
+// Users Routes
 $routes->group('api/users', ['namespace' => 'App\Controllers\Users', 'filter' => 'auth'], function ($routes) {
     $routes->get('', 'Users::getAllUsers');
     $routes->get('stats', 'Users::getUserStats');
@@ -352,14 +357,14 @@ $routes->group('api/users', ['namespace' => 'App\Controllers\Users', 'filter' =>
     $routes->post('bulk-delete', 'Users::bulkDelete');
 });
 
-// Audit Logs Routes 
+// Audit Logs Routes
 $routes->group('api/audit-logs', ['namespace' => 'App\Controllers\AuditLog', 'filter' => 'auth'], function ($routes) {
     $routes->get('', 'AuditLog::getAll');
     $routes->get('stats', 'AuditLog::getStats');
     $routes->get('my-activity', 'AuditLog::getMyActivity');
 });
 
-// Recruitment Admin Routes 
+// Recruitment Admin Routes
 $routes->group('api/recruitment-admin', ['namespace' => 'App\Controllers\RecruitmentAdmin', 'filter' => 'auth'], function ($routes) {
     $routes->get('dashboard/stats', 'RecruitmentAdmin::getDashboardStats');
     $routes->get('dashboard/top-performers', 'RecruitmentAdmin::getTopPerformers');
@@ -373,7 +378,7 @@ $routes->group('api/recruitment-admin', ['namespace' => 'App\Controllers\Recruit
     $routes->put('settings', 'RecruitmentAdmin::updateSettings');
 });
 
-// Pricing Request Routes 
+// Pricing Request Routes
 $routes->group('api/pricing-request', ['namespace' => 'App\Controllers\PricingRequest'], function ($routes) {
     $routes->post('', 'PricingRequest::create');
     $routes->get('', 'PricingRequest::findAll', ['filter' => 'auth']);
@@ -385,7 +390,7 @@ $routes->group('api/pricing-request', ['namespace' => 'App\Controllers\PricingRe
     $routes->get('(:segment)/attachments', 'PricingRequest::getAttachments', ['filter' => 'auth']);
 });
 
-// About Admin Routes 
+// About Admin Routes
 $routes->group('api/about', ['namespace' => 'App\Controllers\About'], function ($routes) {
     $routes->post('', 'About::createAboutContent', ['filter' => 'auth']);
     $routes->put('', 'About::updateAboutContent', ['filter' => 'auth']);
@@ -398,7 +403,7 @@ $routes->group('api/about', ['namespace' => 'App\Controllers\About'], function (
     $routes->post('sections/(:segment)/restore/(:num)', 'About::restoreVersion', ['filter' => 'auth']);
 });
 
-// Interview Routes 
+// Interview Routes
 $routes->group('api/interviews', ['namespace' => 'App\Controllers\Interviews', 'filter' => 'auth'], function ($routes) {
     // Create interview
     $routes->post('', 'Interviews::createInterview');
@@ -461,6 +466,34 @@ $routes->get('uploads/(:any)', function ($path) {
 
     // File not found
     throw \CodeIgniter\Exceptions\PageNotFoundException::forPageNotFound();
+});
+
+
+$routes->group('api/backup', ['namespace' => 'App\Controllers\Backup', 'filter' => 'auth'], function ($routes) {
+    // List all backups
+    $routes->get('', 'Backup::index');
+
+    // Create new backup
+    $routes->post('create', 'Backup::create');
+
+    // Download backup
+    $routes->get('download/(:segment)', 'Backup::download/$1');
+
+    // Restore backup (requires password)
+    $routes->post('restore/(:segment)', 'Backup::restore/$1');
+
+    // Delete backup
+    $routes->delete('(:segment)', 'Backup::delete/$1');
+
+    // Settings
+    $routes->get('settings', 'Backup::getSettings');
+    $routes->put('settings', 'Backup::updateSettings');
+
+    // Statistics
+    $routes->get('stats', 'Backup::stats');
+
+    // Test configuration
+    $routes->get('test-config', 'Backup::testConfig');
 });
 
 // Handle /public/* URLs (if code generates URLs with /public/ prefix)
