@@ -41,10 +41,10 @@ $routes->group('api/jobs', ['namespace' => 'App\Controllers\Jobs'], function ($r
     $routes->get('categories', 'Jobs::getCategories');
     $routes->get('newest', 'Jobs::getNewestJobs');
 
-    // ===== AUTH ROUTES (specific,be above generic) =====
+    // ===== AUTH ROUTES (specific, above generic) =====
     $routes->get('employer/my-jobs', 'Jobs::getMyJobs', ['filter' => 'auth']);
 
-    //  Management fetch for edit screen (DRAFT/PENDING/REJECTED)
+    // Management fetch for edit screen (DRAFT/PENDING/REJECTED)
     $routes->get('manage/(:segment)', 'Jobs::getManageJobById/$1', ['filter' => 'auth']);
 
     // Admin routes
@@ -135,6 +135,17 @@ $routes->group('api/profile-field-settings', ['namespace' => 'App\Controllers\Se
     $routes->patch('bulk', 'ProfileFieldSettings::bulkUpdate', ['filter' => 'auth']);
 });
 
+// ============================================================
+// EDUCATION QUALIFICATION LEVELS
+// Public endpoint — used by candidate education dropdowns and
+// admin job-configuration education pickers (no auth required).
+// Admin CRUD endpoints are in the api/admin group below.
+// ============================================================
+$routes->group('api/education-qualification-levels', ['namespace' => 'App\Controllers\Settings'], function ($routes) {
+    // Public: active levels only
+    $routes->get('', 'EducationQualificationLevels::index');
+});
+
 // Candidate Routes
 $routes->group('api/candidate', ['namespace' => 'App\Controllers\Candidate', 'filter' => 'auth'], function ($routes) {
     $routes->get('profile', 'Candidate::getProfile');
@@ -190,7 +201,6 @@ $routes->group('api/candidate', ['namespace' => 'App\Controllers\Candidate', 'fi
     $routes->post('files/upload', 'Candidate::uploadCandidateFile');
     $routes->get('files', 'Candidate::listCandidateFiles');
     $routes->delete('files/(:segment)', 'Candidate::deleteCandidateFile/$1');
-
 });
 
 // Applications Routes
@@ -229,7 +239,7 @@ $routes->group('api/shortlist', ['namespace' => 'App\Controllers\Shortlist', 'fi
 
     $routes->post('(:segment)/rerank', 'Shortlist::rerank/$1');
 
-    // admin scoring
+    // Admin scoring
     $routes->patch('(:segment)/results/(:segment)/admin-score', 'Shortlist::setAdminScores/$1/$2');
     $routes->patch('(:segment)/results/(:segment)/override-disqualification', 'Shortlist::setOverrideDisqualification/$1/$2');
 
@@ -239,7 +249,6 @@ $routes->group('api/shortlist', ['namespace' => 'App\Controllers\Shortlist', 'fi
     // Statistics
     $routes->get('(:segment)/stats', 'Shortlist::getStats/$1');
 });
-
 
 // Companies Routes
 $routes->group('api/companies', ['namespace' => 'App\Controllers\Companies'], function ($routes) {
@@ -287,6 +296,26 @@ $routes->group('api/admin/upload', ['namespace' => 'App\Controllers\Upload'], fu
     $routes->get('stats', 'Upload::getStats');
     $routes->get('(:segment)', 'Upload::getFile/$1');
     $routes->delete('(:segment)', 'Upload::deleteFile/$1');
+});
+
+// ============================================================
+// ADMIN EDUCATION QUALIFICATION LEVELS (CRUD)
+// ============================================================
+$routes->group('api/admin/education-qualification-levels', ['namespace' => 'App\Controllers\Settings', 'filter' => 'auth'], function ($routes) {
+    // List ALL levels (including inactive) — admin view
+    $routes->get('', 'EducationQualificationLevels::adminIndex');
+
+    // Create new level
+    $routes->post('', 'EducationQualificationLevels::create');
+
+    // Bulk reorder — MUST be before (:segment) to avoid collision
+    $routes->put('reorder', 'EducationQualificationLevels::reorder');
+
+    // Update a specific level
+    $routes->put('(:segment)', 'EducationQualificationLevels::update/$1');
+
+    // Delete a specific level (non-system only)
+    $routes->delete('(:segment)', 'EducationQualificationLevels::destroy/$1');
 });
 
 // Admin Routes
@@ -467,7 +496,6 @@ $routes->get('uploads/(:any)', function ($path) {
     // File not found
     throw \CodeIgniter\Exceptions\PageNotFoundException::forPageNotFound();
 });
-
 
 $routes->group('api/backup', ['namespace' => 'App\Controllers\Backup', 'filter' => 'auth'], function ($routes) {
     // List all backups
