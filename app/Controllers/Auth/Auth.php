@@ -315,17 +315,32 @@ class Auth extends BaseController
                 'resetPasswordExpires' => $resetExpires
             ]);
 
+            // LOG 1: Token saved to DB
+            log_message('debug', '[ForgotPassword] Reset token generated for user: ' . $user['email'] . ' | Token: ' . $resetToken);
+
             // Send password reset email (non-blocking)
             try {
                 $emailHelper = new EmailHelper();
+
+                // LOG 2: About to attempt sending
+                log_message('debug', '[ForgotPassword] Attempting to send reset email to: ' . $user['email']);
+
                 $emailHelper->sendPasswordResetEmail(
                     $user['email'],
                     $user['firstName'] . ' ' . $user['lastName'],
                     $resetToken
                 );
+
+                // LOG 3: Confirmed sent
+                log_message('debug', '[ForgotPassword] Reset email SENT successfully to: ' . $user['email']);
+
             } catch (\Exception $e) {
-                log_message('error', 'Failed to send password reset email: ' . $e->getMessage());
+                // LOG 4: Full error + trace
+                log_message('error', '[ForgotPassword] FAILED to send email to: ' . $user['email'] . ' | Error: ' . $e->getMessage() . ' | Trace: ' . $e->getTraceAsString());
             }
+        } else {
+            // LOG 5: Email not found in DB
+            log_message('debug', '[ForgotPassword] No user found for email: ' . $email);
         }
 
         // Always return same message for security (don't reveal if email exists)
