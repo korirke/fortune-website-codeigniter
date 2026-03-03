@@ -1445,15 +1445,21 @@ class Applications extends BaseController
             'coverLetter' => $app['coverLetter'] ?? null,
             'resumeUrl' => $app['resumeUrl'] ?? null,
             'portfolioUrl' => $app['portfolioUrl'] ?? null,
+
             'expectedSalary' => $app['expectedSalary'] ?? null,
             'privacyConsent' => (bool) ($app['privacyConsent'] ?? false),
             'availableStartDate' => $app['availableStartDate'] ?? null,
+
             'notes' => $app['notes'] ?? null,
             'internalNotes' => $app['internalNotes'] ?? null,
             'rating' => isset($app['rating']) ? (int) $app['rating'] : null,
+
+            'answers' => $app['answers'] ?? null,
+
             'appliedAt' => $app['appliedAt'] ?? null,
             'reviewedAt' => $app['reviewedAt'] ?? null,
             'updatedAt' => $app['updatedAt'] ?? null,
+
             'candidate' => [
                 'id' => $app['candidate_id'],
                 'firstName' => $app['firstName'] ?? '',
@@ -1473,6 +1479,7 @@ class Applications extends BaseController
                     'experiences' => []
                 ]
             ],
+
             'job' => [
                 'id' => $app['job_id'],
                 'title' => $app['job_title'] ?? '',
