@@ -359,6 +359,7 @@ $routes->group('api/admin/candidates', ['namespace' => 'App\Controllers\AdminCan
     // IMPORTANT: Specific routes MUST come before parameterized routes
     $routes->get('stats', 'AdminCandidates::getCandidateStats');
     $routes->post('cleanup-resumes', 'AdminCandidates::cleanupOldResumes');
+    $routes->post('cleanup-duplicate-files', 'AdminCandidates::cleanupDuplicateCandidateFiles');
     $routes->get('', 'AdminCandidates::getAllCandidates');
     // Use (:any) instead of (:segment) for longer IDs like cprofile_6937e1ef31b9a
     $routes->get('(:any)/applications', 'AdminCandidates::getCandidateApplications/$1');
