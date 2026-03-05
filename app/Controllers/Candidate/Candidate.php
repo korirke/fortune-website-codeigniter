@@ -2463,7 +2463,6 @@ class Candidate extends BaseController
         if (!$category || !in_array($category, $allowedCategories, true))
             return $this->fail('Invalid category', 400);
 
-        // Limit size
         $maxBytes = 10 * 1024 * 1024; // 10MB
         if ($file->getSize() > $maxBytes)
             return $this->fail('File exceeds 10MB limit', 400);
@@ -2481,16 +2480,22 @@ class Candidate extends BaseController
 
         $model = new \App\Models\CandidateFile();
 
-        // ─────────────────────────────────────────────────────────────────────────
+        // ─────────────────────────────────────────────────────────────────
         // REPLACEMENT LOGIC
         //
-        // For every category (including OTHER), if the candidate already has a file
-        // with the SAME original filename + category, replace it (delete old physical
-        // file + DB record) so you never accumulate duplicates of the same upload.
+        // TRUE single-slot categories (only one file ever makes sense):
+        //   NATIONAL_ID, CV, DRIVING_LICENSE
+        //   → Replace ALL existing files in that category on upload.
         //
-        // For non-OTHER categories we ALSO replace ALL files in that category
-        // (one-file-per-category rule), matching the original behaviour.
-        // ─────────────────────────────────────────────────────────────────────────
+        // Multi-file categories (candidate legitimately has several):
+        //   ACADEMIC_CERT, PROFESSIONAL_CERT, CLEARANCE_CERT, TESTIMONIAL,
+        //   PUBLICATION_EVIDENCE, COVER_LETTER, OTHER
+        //   → Only replace if the EXACT same filename already exists under
+        //     that category. Different filenames always coexist.
+        //
+        // This prevents wiping a candidate's 5 clearance certs or 3 academic
+        // degrees or 2 cover letters just because they re-uploaded one of them.
+        // ─────────────────────────────────────────────────────────────────
 
         $deletePhysical = function (array $existing) use ($model): void {
             try {
@@ -2502,13 +2507,26 @@ class Candidate extends BaseController
                     @unlink($physicalPath);
                 }
             } catch (\Exception $e) {
-                // ignore — DB record will still be removed
+                // ignore physical delete failure — DB record still removed
             }
             $model->delete($existing['id']);
         };
 
-        if ($category === 'OTHER') {
-            // For OTHER: only replace if the same filename already exists for this candidate
+        // Categories where only ONE file ever makes sense
+        $singleSlotCategories = ['NATIONAL_ID', 'CV', 'DRIVING_LICENSE'];
+
+        if (in_array($category, $singleSlotCategories, true)) {
+            // Wipe the entire category slot — only one allowed
+            $existingFiles = $model
+                ->where('candidateId', $profile['id'])
+                ->where('category', $category)
+                ->findAll();
+
+            foreach ($existingFiles as $existing) {
+                $deletePhysical($existing);
+            }
+        } else {
+            // Multi-file category — only replace if same filename already exists
             $sameNameFile = $model
                 ->where('candidateId', $profile['id'])
                 ->where('category', $category)
@@ -2518,19 +2536,9 @@ class Candidate extends BaseController
             if ($sameNameFile) {
                 $deletePhysical($sameNameFile);
             }
-        } else {
-            // For all other categories: replace every existing file in that slot
-            $existingFiles = $model
-                ->where('candidateId', $profile['id'])
-                ->where('category', $category)
-                ->findAll();
-
-            foreach ($existingFiles as $existing) {
-                $deletePhysical($existing);
-            }
         }
 
-        // Move the new file only after old ones are cleaned up
+        // Move new file only after old ones are cleaned up
         $file->move($uploadPath, $newName);
 
         $id = uniqid('cfile_');
