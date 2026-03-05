@@ -22,6 +22,8 @@ class Upload extends BaseController
         'image/svg+xml',
         'image/gif',
         'application/pdf',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         'video/mp4',
         'video/webm',
     ];
@@ -40,6 +42,12 @@ class Upload extends BaseController
         if (str_starts_with($mimetype, 'video/'))
             return 'video';
         if ($mimetype === 'application/pdf')
+            return 'document';
+        // ← ADDED: Word document types
+        if (in_array($mimetype, [
+            'application/msword',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        ], true))
             return 'document';
         return 'other';
     }
