@@ -10,6 +10,15 @@ class CandidateReferee extends Model
     protected $protectFields = true;
 
     protected $allowedFields = [
-        'id','candidateId','name','position','organization','phone','email','createdAt','updatedAt'
+        'id',
+        'candidateId',
+        'name',
+        'position',
+        'organization',
+        'phone',
+        'email',
+        'relationship',
+        'createdAt',
+        'updatedAt',
     ];
 }
