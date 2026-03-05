@@ -48,17 +48,19 @@ class Candidate extends BaseController
         return [$profile, null];
     }
 
-private function normalizeDegreeLevel(?string $level): ?string
-{
-    if ($level === null) return null;
+    private function normalizeDegreeLevel(?string $level): ?string
+    {
+        if ($level === null)
+            return null;
 
-    $level = strtoupper(trim($level));
+        $cleaned = strtoupper(trim($level));
 
-    $allowed = ProfileRequirementKeys::educationLevels();
+        // Accept any non-empty level — validation is handled by the
+        // frontend which loads levels directly from education_qualification_levels.
+        return $cleaned !== '' ? $cleaned : null;
+    }
 
-    return in_array($level, $allowed, true) ? $level : null;
-}
-    /**a
+    /**
      * Get Profile 
      */
     public function getProfile()
@@ -462,19 +464,23 @@ private function normalizeDegreeLevel(?string $level): ?string
             return $this->failNotFound('Candidate profile not found');
         }
 
-        // Calculate next version number
         $resumeModel = new ResumeVersion();
-        $latestResume = $resumeModel->where('candidateId', $profile['id'])
-            ->orderBy('version', 'DESC')
-            ->first();
 
-        $nextVersion = $latestResume ? ((int) $latestResume['version'] + 1) : 1;
-
-        // Use transaction to ensure both operations succeed or fail together
+        // transaction to ensure all operations succeed or fail together
         $db = \Config\Database::connect();
         $db->transStart();
 
         try {
+            // Delete ALL existing resumes for this candidate (DB records + physical files)
+            $existingResumes = $resumeModel->where('candidateId', $profile['id'])->findAll();
+            foreach ($existingResumes as $existing) {
+                $physicalPath = WRITEPATH . ltrim(str_replace('/uploads/', 'uploads/', $existing['fileUrl']), '/');
+                if (is_file($physicalPath)) {
+                    @unlink($physicalPath);
+                }
+                $resumeModel->delete($existing['id']);
+            }
+
             // Sanitize original filename and add timestamp
             $originalName = $file->getClientName();
             $pathInfo = pathinfo($originalName);
@@ -488,7 +494,7 @@ private function normalizeDegreeLevel(?string $level): ?string
             $resumeData = [
                 'id' => uniqid('resume_'),
                 'candidateId' => $profile['id'],
-                'version' => $nextVersion,
+                'version' => 1,
                 'fileName' => $file->getClientName(),
                 'fileUrl' => '/uploads/resumes/' . $newName,
                 'fileSize' => $file->getSize()
@@ -938,12 +944,6 @@ private function normalizeDegreeLevel(?string $level): ?string
 
             // Validate degreeLevel
             $degreeLevel = $this->normalizeDegreeLevel($data['degreeLevel'] ?? null);
-            if (array_key_exists('degreeLevel', $data) && $degreeLevel === null) {
-                return $this->fail(
-                    'Invalid degreeLevel. Allowed: ' . implode(', ', ProfileRequirementKeys::educationLevels()),
-                    400
-                );
-            }
 
 
             // Dates
@@ -1032,12 +1032,9 @@ private function normalizeDegreeLevel(?string $level): ?string
                 return $this->failNotFound('Education not found');
 
             // degreeLevel validation (optional)
-            $degreeLevel = null;
             if (array_key_exists('degreeLevel', $data)) {
                 $degreeLevel = $this->normalizeDegreeLevel($data['degreeLevel']);
-                if ($degreeLevel === null) {
-                    return $this->fail('Invalid degreeLevel. Allowed: CERTIFICATE, DIPLOMA, BACHELORS, MASTERS, PHD, OTHER', 400);
-                }
+                // null just means blank — don't block; updateData below only writes if key was present
             }
 
             // Dates
@@ -2459,35 +2456,84 @@ private function normalizeDegreeLevel(?string $level): ?string
             'CLEARANCE_CERT',
             'DRIVING_LICENSE',
             'PUBLICATION_EVIDENCE',
+            'COVER_LETTER',
             'OTHER'
         ];
-        if (!$category || !in_array($category, $allowedCategories, true)) {
+
+        if (!$category || !in_array($category, $allowedCategories, true))
             return $this->fail('Invalid category', 400);
-        }
 
         // Limit size
         $maxBytes = 10 * 1024 * 1024; // 10MB
-        if ($file->getSize() > $maxBytes) {
+        if ($file->getSize() > $maxBytes)
             return $this->fail('File exceeds 10MB limit', 400);
-        }
 
         $uploadPath = WRITEPATH . 'uploads/candidate-files/';
-        if (!is_dir($uploadPath)) {
+        if (!is_dir($uploadPath))
             mkdir($uploadPath, 0755, true);
-        }
 
-        // Sanitize name
+        // Sanitize filename
         $originalName = $file->getClientName();
         $pathInfo = pathinfo($originalName);
         $base = preg_replace('/[^a-zA-Z0-9._-]/', '_', $pathInfo['filename'] ?? 'file');
         $ext = $pathInfo['extension'] ?? '';
         $newName = $base . '_' . time() . ($ext ? '.' . $ext : '');
 
+        $model = new \App\Models\CandidateFile();
+
+        // ─────────────────────────────────────────────────────────────────────────
+        // REPLACEMENT LOGIC
+        //
+        // For every category (including OTHER), if the candidate already has a file
+        // with the SAME original filename + category, replace it (delete old physical
+        // file + DB record) so you never accumulate duplicates of the same upload.
+        //
+        // For non-OTHER categories we ALSO replace ALL files in that category
+        // (one-file-per-category rule), matching the original behaviour.
+        // ─────────────────────────────────────────────────────────────────────────
+
+        $deletePhysical = function (array $existing) use ($model): void {
+            try {
+                $physicalPath = WRITEPATH . ltrim(
+                    str_replace('/uploads/', 'uploads/', $existing['fileUrl']),
+                    '/'
+                );
+                if (is_file($physicalPath)) {
+                    @unlink($physicalPath);
+                }
+            } catch (\Exception $e) {
+                // ignore — DB record will still be removed
+            }
+            $model->delete($existing['id']);
+        };
+
+        if ($category === 'OTHER') {
+            // For OTHER: only replace if the same filename already exists for this candidate
+            $sameNameFile = $model
+                ->where('candidateId', $profile['id'])
+                ->where('category', $category)
+                ->where('fileName', $originalName)
+                ->first();
+
+            if ($sameNameFile) {
+                $deletePhysical($sameNameFile);
+            }
+        } else {
+            // For all other categories: replace every existing file in that slot
+            $existingFiles = $model
+                ->where('candidateId', $profile['id'])
+                ->where('category', $category)
+                ->findAll();
+
+            foreach ($existingFiles as $existing) {
+                $deletePhysical($existing);
+            }
+        }
+
+        // Move the new file only after old ones are cleaned up
         $file->move($uploadPath, $newName);
 
-        $model = new \App\Models\CandidateFile();
         $id = uniqid('cfile_');
-
         $row = [
             'id' => $id,
             'candidateId' => $profile['id'],
@@ -2504,7 +2550,7 @@ private function normalizeDegreeLevel(?string $level): ?string
 
         return $this->respondCreated([
             'success' => true,
-            'message' => 'File uploaded',
+            'message' => 'File uploaded successfully',
             'data' => $model->find($id),
         ]);
     }
