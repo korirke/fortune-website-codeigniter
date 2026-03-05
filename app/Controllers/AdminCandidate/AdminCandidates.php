@@ -4,6 +4,7 @@ namespace App\Controllers\AdminCandidate;
 
 use App\Controllers\BaseController;
 use App\Models\CandidateProfile;
+use App\Models\ResumeVersion;
 use App\Traits\NormalizedResponseTrait;
 
 /**
@@ -657,4 +658,369 @@ class AdminCandidates extends BaseController
 
         return $formattedApplications;
     }
+
+    public function previewResumeCleanup()
+    {
+        try {
+            $resumeModel = new ResumeVersion();
+            $profileModel = new CandidateProfile();
+            $userModel = new \App\Models\User();
+
+            $profiles = $profileModel->findAll();
+
+            $candidatesAffected = 0;
+            $resumesToDelete = 0;
+            $bytesToFree = 0;
+            $details = [];
+
+            foreach ($profiles as $profile) {
+                $resumes = $resumeModel->where('candidateId', $profile['id'])
+                    ->orderBy('version', 'DESC')
+                    ->findAll();
+
+                if (count($resumes) <= 1)
+                    continue;
+
+                $toDelete = array_slice($resumes, 1);
+
+                $candidateBytes = 0;
+                $deleteList = [];
+
+                foreach ($toDelete as $old) {
+                    $physicalPath = WRITEPATH . ltrim(
+                        str_replace('/uploads/', 'uploads/', $old['fileUrl']),
+                        '/'
+                    );
+                    $fileSize = is_file($physicalPath) ? filesize($physicalPath) : 0;
+                    $candidateBytes += $fileSize;
+                    $bytesToFree += $fileSize;
+                    $resumesToDelete++;
+
+                    $deleteList[] = [
+                        'id' => $old['id'],
+                        'fileName' => $old['fileName'] ?? basename($old['fileUrl']),
+                        'fileSize' => $fileSize,
+                        'createdAt' => $old['createdAt'] ?? null,
+                    ];
+                }
+
+                $kept = $resumes[0];
+                $user = $userModel->select('firstName, lastName, email')->find($profile['userId']);
+
+                $details[] = [
+                    'candidateId' => $profile['id'],
+                    'candidateName' => $user ? trim($user['firstName'] . ' ' . $user['lastName']) : 'Unknown',
+                    'email' => $user['email'] ?? null,
+                    'keeping' => [
+                        'fileName' => $kept['fileName'] ?? basename($kept['fileUrl']),
+                        'fileSize' => (function () use ($kept) {
+                            $p = WRITEPATH . ltrim(str_replace('/uploads/', 'uploads/', $kept['fileUrl']), '/');
+                            return is_file($p) ? filesize($p) : 0;
+                        })(),
+                    ],
+                    'toDelete' => $deleteList,
+                    'bytesToFree' => $candidateBytes,
+                ];
+
+                $candidatesAffected++;
+            }
+
+            return $this->respond([
+                'success' => true,
+                'message' => 'Preview generated',
+                'data' => [
+                    'candidatesAffected' => $candidatesAffected,
+                    'resumesToDelete' => $resumesToDelete,
+                    'bytesToFree' => $bytesToFree,
+                    'bytesToFreeHuman' => $this->formatBytes($bytesToFree),
+                    'details' => $details,
+                ]
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', 'Preview resume cleanup error: ' . $e->getMessage());
+            return $this->respond([
+                'success' => false,
+                'message' => 'Failed to generate preview: ' . $e->getMessage(),
+                'data' => null
+            ], 500);
+        }
+    }
+
+    public function previewDuplicateFileCleanup()
+    {
+        try {
+            $fileModel = new \App\Models\CandidateFile();
+            $userModel = new \App\Models\User();
+            $profileModel = new CandidateProfile();
+
+            $allFiles = $fileModel->orderBy('createdAt', 'DESC')->findAll();
+
+            if (empty($allFiles)) {
+                return $this->respond([
+                    'success' => true,
+                    'message' => 'Nothing to clean up',
+                    'data' => [
+                        'candidatesAffected' => 0,
+                        'filesToDelete' => 0,
+                        'bytesToFree' => 0,
+                        'bytesToFreeHuman' => '0 B',
+                        'details' => [],
+                    ]
+                ]);
+            }
+
+            // Group by candidate → category::filename (same file uploaded twice = duplicate)
+            $grouped = [];
+            foreach ($allFiles as $file) {
+                $key = $file['category'] . '::' . $file['fileName'];
+                $grouped[$file['candidateId']][$key][] = $file;
+            }
+
+            $candidatesAffected = 0;
+            $filesToDelete = 0;
+            $bytesToFree = 0;
+            $details = [];
+
+            foreach ($grouped as $candidateId => $groups) {
+                $candidateDeleteList = [];
+                $candidateBytes = 0;
+
+                foreach ($groups as $key => $files) {
+                    if (count($files) <= 1)
+                        continue;
+
+                    // Index 0 = newest (kept), everything after = duplicates
+                    $toDelete = array_slice($files, 1);
+
+                    foreach ($toDelete as $old) {
+                        $physicalPath = WRITEPATH . ltrim(
+                            str_replace('/uploads/', 'uploads/', $old['fileUrl']),
+                            '/'
+                        );
+                        $fileSize = is_file($physicalPath) ? filesize($physicalPath) : 0;
+                        $candidateBytes += $fileSize;
+                        $bytesToFree += $fileSize;
+                        $filesToDelete++;
+
+                        $candidateDeleteList[] = [
+                            'id' => $old['id'],
+                            'category' => $old['category'],
+                            'fileName' => $old['fileName'],
+                            'fileSize' => $fileSize,
+                            'createdAt' => $old['createdAt'] ?? null,
+                        ];
+                    }
+                }
+
+                if (empty($candidateDeleteList))
+                    continue;
+
+                $profile = $profileModel->find($candidateId);
+                $user = $profile
+                    ? $userModel->select('firstName, lastName, email')->find($profile['userId'])
+                    : null;
+
+                $details[] = [
+                    'candidateId' => $candidateId,
+                    'candidateName' => $user ? trim($user['firstName'] . ' ' . $user['lastName']) : 'Unknown',
+                    'email' => $user['email'] ?? null,
+                    'toDelete' => $candidateDeleteList,
+                    'bytesToFree' => $candidateBytes,
+                ];
+
+                $candidatesAffected++;
+            }
+
+            return $this->respond([
+                'success' => true,
+                'message' => 'Preview generated',
+                'data' => [
+                    'candidatesAffected' => $candidatesAffected,
+                    'filesToDelete' => $filesToDelete,
+                    'bytesToFree' => $bytesToFree,
+                    'bytesToFreeHuman' => $this->formatBytes($bytesToFree),
+                    'details' => $details,
+                ]
+            ]);
+
+        } catch (\Exception $e) {
+            log_message('error', 'Preview file cleanup error: ' . $e->getMessage());
+            return $this->respond([
+                'success' => false,
+                'message' => 'Failed to generate preview: ' . $e->getMessage(),
+                'data' => null
+            ], 500);
+        }
+    }
+
+    // ── Shared helper ──────────────────────────────────────────────────────────
+    private function formatBytes(int $bytes): string
+    {
+        if ($bytes >= 1073741824)
+            return round($bytes / 1073741824, 2) . ' GB';
+        if ($bytes >= 1048576)
+            return round($bytes / 1048576, 2) . ' MB';
+        if ($bytes >= 1024)
+            return round($bytes / 1024, 2) . ' KB';
+        return $bytes . ' B';
+    }
+    public function cleanupOldResumes()
+    {
+        try {
+            $body = $this->request->getJSON(true);
+            $selectedIds = $body['selectedIds'] ?? [];
+
+            // If nothing selected, nothing to do
+            if (empty($selectedIds)) {
+                return $this->respond([
+                    'success' => true,
+                    'message' => 'No files selected.',
+                    'data' => ['candidatesProcessed' => 0, 'resumesDeleted' => 0]
+                ]);
+            }
+
+            $resumeModel = new ResumeVersion();
+            $profileModel = new CandidateProfile();
+
+            $totalDeleted = 0;
+            $candidatesProcessed = 0;
+
+            // Fetch only the selected resume records
+            $toDeleteRecords = $resumeModel->whereIn('id', $selectedIds)->findAll();
+
+            if (empty($toDeleteRecords)) {
+                return $this->respond([
+                    'success' => true,
+                    'message' => 'No matching records found.',
+                    'data' => ['candidatesProcessed' => 0, 'resumesDeleted' => 0]
+                ]);
+            }
+
+            // Group by candidateId so we can update the profile after deletion
+            $byCandidateId = [];
+            foreach ($toDeleteRecords as $record) {
+                $byCandidateId[$record['candidateId']][] = $record;
+            }
+
+            foreach ($byCandidateId as $candidateId => $records) {
+                foreach ($records as $record) {
+                    // Delete physical file
+                    $physicalPath = WRITEPATH . ltrim(
+                        str_replace('/uploads/', 'uploads/', $record['fileUrl']),
+                        '/'
+                    );
+                    if (is_file($physicalPath)) {
+                        @unlink($physicalPath);
+                    }
+                    $resumeModel->delete($record['id']);
+                    $totalDeleted++;
+                }
+
+                // After deletion, get the surviving resume and sync profile
+                $surviving = $resumeModel->where('candidateId', $candidateId)
+                    ->orderBy('version', 'DESC')
+                    ->first();
+
+                if ($surviving) {
+                    // Reset version to 1 and sync profile URL
+                    $resumeModel->update($surviving['id'], ['version' => 1]);
+                    $profileModel->where('id', $candidateId)->set([
+                        'resumeUrl' => $surviving['fileUrl'],
+                        'resumeUpdatedAt' => date('Y-m-d H:i:s'),
+                    ])->update();
+                }
+
+                $candidatesProcessed++;
+            }
+
+            return $this->respond([
+                'success' => true,
+                'message' => "Cleanup complete. Processed {$candidatesProcessed} candidates, deleted {$totalDeleted} resume(s).",
+                'data' => [
+                    'candidatesProcessed' => $candidatesProcessed,
+                    'resumesDeleted' => $totalDeleted,
+                ]
+            ]);
+
+        } catch (\Exception $e) {
+            log_message('error', 'Resume cleanup error: ' . $e->getMessage());
+            return $this->respond([
+                'success' => false,
+                'message' => 'Cleanup failed: ' . $e->getMessage(),
+                'data' => []
+            ], 500);
+        }
+    }
+
+    public function cleanupDuplicateCandidateFiles()
+    {
+        try {
+            $body = $this->request->getJSON(true);
+            $selectedIds = $body['selectedIds'] ?? [];
+
+            // If nothing selected, nothing to do
+            if (empty($selectedIds)) {
+                return $this->respond([
+                    'success' => true,
+                    'message' => 'No files selected.',
+                    'data' => ['candidatesProcessed' => 0, 'filesDeleted' => 0]
+                ]);
+            }
+
+            $fileModel = new \App\Models\CandidateFile();
+
+            // Fetch only the selected file records
+            $toDeleteRecords = $fileModel->whereIn('id', $selectedIds)->findAll();
+
+            if (empty($toDeleteRecords)) {
+                return $this->respond([
+                    'success' => true,
+                    'message' => 'No matching records found.',
+                    'data' => ['candidatesProcessed' => 0, 'filesDeleted' => 0]
+                ]);
+            }
+
+            $totalDeleted = 0;
+            $candidatesAffected = [];
+
+            foreach ($toDeleteRecords as $file) {
+                // Delete physical file
+                $physicalPath = WRITEPATH . ltrim(
+                    str_replace('/uploads/', 'uploads/', $file['fileUrl']),
+                    '/'
+                );
+                try {
+                    if (is_file($physicalPath)) {
+                        @unlink($physicalPath);
+                    }
+                } catch (\Exception $e) {
+                    // ignore physical delete errors, continue with DB
+                }
+
+                $fileModel->delete($file['id']);
+                $totalDeleted++;
+                $candidatesAffected[$file['candidateId']] = true;
+            }
+
+            $candidatesProcessed = count($candidatesAffected);
+
+            return $this->respond([
+                'success' => true,
+                'message' => "Cleanup complete. Processed {$candidatesProcessed} candidates, deleted {$totalDeleted} duplicate file(s).",
+                'data' => [
+                    'candidatesProcessed' => $candidatesProcessed,
+                    'filesDeleted' => $totalDeleted,
+                ]
+            ]);
+
+        } catch (\Exception $e) {
+            log_message('error', 'Duplicate file cleanup error: ' . $e->getMessage());
+            return $this->respond([
+                'success' => false,
+                'message' => 'Cleanup failed: ' . $e->getMessage(),
+                'data' => []
+            ], 500);
+        }
+    }
+
 }
