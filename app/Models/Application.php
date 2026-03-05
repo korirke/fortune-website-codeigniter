@@ -6,13 +6,14 @@ use CodeIgniter\Model;
 
 class Application extends Model
 {
-    protected $table            = 'applications';
-    protected $primaryKey       = 'id';
+    protected $table = 'applications';
+    protected $primaryKey = 'id';
     protected $useAutoIncrement = false;
-    protected $returnType       = 'array';
-    protected $useSoftDeletes   = false;
-    protected $protectFields    = true;
-    protected $allowedFields    = [
+    protected $returnType = 'array';
+    protected $useSoftDeletes = false;
+    protected $protectFields = true;
+
+    protected $allowedFields = [
         'id',
         'jobId',
         'candidateId',
@@ -20,19 +21,23 @@ class Application extends Model
         'resumeUrl',
         'portfolioUrl',
         'expectedSalary',
+        'currentSalary',
         'privacyConsent',
         'availableStartDate',
         'status',
-        'rating',
+        'isActive',
+        'notes',
         'internalNotes',
+        'rating',
+        'answers',
         'appliedAt',
         'reviewedAt',
         'reviewedBy',
-        'updatedAt'
+        'updatedAt',
     ];
 
     protected $useTimestamps = false;
-    protected $dateFormat    = 'datetime';
-    protected $createdField  = 'appliedAt';
-    protected $updatedField  = 'updatedAt';
+    protected $dateFormat = 'datetime';
+    protected $createdField = 'appliedAt';
+    protected $updatedField = 'updatedAt';
 }
