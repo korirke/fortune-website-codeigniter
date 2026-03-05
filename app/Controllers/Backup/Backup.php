@@ -132,7 +132,6 @@ class Backup extends BaseController
 
             $user = $this->getUserFromToken();
             if (!$user || $user['role'] !== 'SUPER_ADMIN') {
-                log_message('error', 'Unauthorized download attempt - User: ' . json_encode($user));
                 return $this->fail('Only super admins can download backups', 403);
             }
 
@@ -142,63 +141,27 @@ class Backup extends BaseController
             }
 
             $filePath = WRITEPATH . 'backups/' . $backup['file_name'];
-
-            if (!file_exists($filePath)) {
-                log_message('error', 'Backup file not found: ' . $filePath);
+            if (!is_file($filePath)) {
                 return $this->failNotFound('Backup file not found on server');
             }
 
-            // Log download
+            // Log download count
             $this->backupModel->update($id, [
                 'last_downloaded_at' => date('Y-m-d H:i:s'),
                 'download_count' => ($backup['download_count'] ?? 0) + 1,
             ]);
 
-            log_message('info', "Backup downloaded: {$id} by user {$user['id']}");
+            // Force correct filename in browser download dialog
+            return $this->response
+                ->download($filePath, null)
+                ->setFileName($backup['file_name'])
+                ->setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+                ->setHeader('Pragma', 'no-cache')
+                ->setHeader('Expires', '0');
 
-            // Detect correct MIME type from actual file extension
-            $extension = strtolower(pathinfo($backup['file_name'], PATHINFO_EXTENSION));
-            $mimeType = match ($extension) {
-                'zip'  => 'application/zip',
-                'gz'   => 'application/gzip',
-                'tar'  => 'application/x-tar',
-                default => 'application/octet-stream',
-            };
-
-            $fileSize = filesize($filePath);
-
-            // Send headers directly — CodeIgniter's response->setBody() loads
-            // the entire file into memory, which breaks for large backups.
-            header('Content-Type: ' . $mimeType);
-            header('Content-Disposition: attachment; filename="' . $backup['file_name'] . '"');
-            header('Content-Length: ' . $fileSize);
-            header('Cache-Control: no-cache, no-store, must-revalidate');
-            header('Pragma: no-cache');
-            header('Expires: 0');
-
-            // Clear any output buffer before streaming
-            if (ob_get_level()) {
-                ob_end_clean();
-            }
-
-            // Stream file in 8KB chunks to keep memory usage flat
-            $handle = fopen($filePath, 'rb');
-            if ($handle === false) {
-                return $this->fail('Failed to open backup file for reading', 500);
-            }
-
-            while (!feof($handle)) {
-                echo fread($handle, 8192);
-                flush();
-            }
-
-            fclose($handle);
-            exit;
-
-        } catch (Exception $e) {
+        } catch (\Exception $e) {
             log_message('error', 'Backup download error: ' . $e->getMessage());
-            log_message('error', 'Stack trace: ' . $e->getTraceAsString());
-            return $this->fail('Failed to download backup: ' . $e->getMessage(), 500);
+            return $this->fail('Failed to download backup', 500);
         }
     }
 
@@ -440,8 +403,8 @@ class Backup extends BaseController
                 $decoded = JWT::decode($token, new Key($jwtSecret, 'HS256'));
 
                 return [
-                    'id'    => $decoded->id ?? null,
-                    'role'  => $decoded->role ?? null,
+                    'id' => $decoded->id ?? null,
+                    'role' => $decoded->role ?? null,
                     'email' => $decoded->email ?? null,
                 ];
             } catch (\Firebase\JWT\ExpiredException $e) {
