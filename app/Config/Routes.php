@@ -31,6 +31,26 @@ $routes->group('api', [], function ($routes) {
     $routes->get('health', 'App\Controllers\App::health');
 });
 
+
+$routes->group('api', ['namespace' => 'App\Controllers'], function ($routes) {
+    $routes->get('ping', function () {
+        return service('response')
+            ->setStatusCode(200)
+            ->setHeader('Content-Type', 'text/plain')
+            ->setBody('Backend reached');
+    });
+
+    // Optional: handle preflight OPTIONS for testing
+    $routes->options('ping', function () {
+        return service('response')
+            ->setStatusCode(200)
+            ->setHeader('Access-Control-Allow-Origin', '*')
+            ->setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+            ->setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+            ->setBody('OPTIONS ok');
+    });
+});
+
 // ============================================
 // JOBS ROUTES
 // ============================================
@@ -358,6 +378,8 @@ $routes->group('api/admin', ['namespace' => 'App\Controllers\Admin', 'filter' =>
 $routes->group('api/admin/candidates', ['namespace' => 'App\Controllers\AdminCandidate', 'filter' => 'auth'], function ($routes) {
     // IMPORTANT: Specific routes MUST come before parameterized routes
     $routes->get('stats', 'AdminCandidates::getCandidateStats');
+    $routes->get('preview-resume-cleanup', 'AdminCandidates::previewResumeCleanup');
+    $routes->get('preview-duplicate-files', 'AdminCandidates::previewDuplicateFileCleanup');
     $routes->post('cleanup-resumes', 'AdminCandidates::cleanupOldResumes');
     $routes->post('cleanup-duplicate-files', 'AdminCandidates::cleanupDuplicateCandidateFiles');
     $routes->get('', 'AdminCandidates::getAllCandidates');
