@@ -999,7 +999,7 @@ class Applications extends BaseController
                 $sheet->mergeCells('A1:AP1');
                 $sheet->getStyle('A1')->getFont()->setBold(true)->setSize(14);
                 $sheet->getStyle('A1')->getAlignment()
-                    ->setHorizontal(Alignment::HORIZONTAL_CENTER)
+                    ->setHorizontal(Alignment::HORIZONTAL_LEFT)
                     ->setVertical(Alignment::VERTICAL_CENTER);
                 $sheet->getRowDimension(1)->setRowHeight(30);
 
