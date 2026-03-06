@@ -996,7 +996,7 @@ class Applications extends BaseController
             } else {
                 // ROW 1: Title (merged A1:D1)
                 $sheet->setCellValue('A1', $title);
-                $sheet->mergeCells('A1:D1');
+                $sheet->mergeCells('A1:AP1');
                 $sheet->getStyle('A1')->getFont()->setBold(true)->setSize(14);
                 $sheet->getStyle('A1')->getAlignment()
                     ->setHorizontal(Alignment::HORIZONTAL_CENTER)
