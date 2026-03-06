@@ -419,8 +419,10 @@ class Jobs extends BaseController
                 'description' => $description,
                 'responsibilities' => $data['responsibilities'] ?? null,
                 'requirements' => $data['requirements'] ?? null,
+                'keySkillsAndCompetencies' => $data['keySkillsAndCompetencies'] ?? null,
                 'benefits' => $data['benefits'] ?? null,
                 'niceToHave' => $data['niceToHave'] ?? null,
+                'jdDocumentUrl' => $data['jdDocumentUrl'] ?? null,
                 'type' => $data['type'] ?? 'FULL_TIME',
                 'experienceLevel' => $data['experienceLevel'] ?? 'MID_LEVEL',
                 'location' => $location,
@@ -526,7 +528,8 @@ class Jobs extends BaseController
                 return $this->fail('Cannot edit jobs with status: ' . $job['status'], 403);
             }
 
-            $validationErrors = $this->validateJobData($data, $isDraft);
+            $mergedData = array_merge($job, $data);
+            $validationErrors = $this->validateJobData($mergedData, $isDraft);
             if (!empty($validationErrors)) {
                 return $this->fail(['message' => 'Validation failed', 'errors' => $validationErrors], 400);
             }
@@ -545,8 +548,10 @@ class Jobs extends BaseController
                 'description',
                 'responsibilities',
                 'requirements',
+                'keySkillsAndCompetencies',
                 'benefits',
                 'niceToHave',
+                'jdDocumentUrl',
                 'type',
                 'experienceLevel',
                 'location',
