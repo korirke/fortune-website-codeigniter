@@ -21,6 +21,7 @@ class LonglistExportService
             applications.appliedAt,
             applications.expectedSalary,
             applications.availableStartDate,
+            applications.currentSalary,
             applications.rating,
             applications.internalNotes,
 
@@ -177,7 +178,7 @@ class LonglistExportService
                 // Col 28-32: Current employment and referees
                 $currentEmployer,
                 $a['expectedSalary'] ?? 'Not stated',
-                'Not stated',
+                $a['currentSalary'] ?? 'Not stated',
                 'Not stated',
                 $referees,
 
