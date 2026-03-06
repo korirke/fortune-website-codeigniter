@@ -14,8 +14,7 @@ class JobProfileRequirements extends BaseController
     use NormalizedResponseTrait;
 
     // =========================================================
-    // EXISTING: Upsert requirement keys
-    // ── UPDATED: also accepts + saves `config` payload ────────
+    // Upsert requirement keys + config
     // =========================================================
     public function upsert($jobId = null)
     {
@@ -23,7 +22,6 @@ class JobProfileRequirements extends BaseController
             $user = $this->request->user ?? null;
             if (!$user)
                 return $this->fail('Unauthorized', 401);
-
             if (!$jobId)
                 return $this->fail('Job ID is required', 400);
 
@@ -32,9 +30,6 @@ class JobProfileRequirements extends BaseController
             if (!$job)
                 return $this->failNotFound('Job not found');
 
-            // Permission: reuse Jobs controller logic if you want; here minimal:
-            // You should ideally call the same canManageJob() logic used in Jobs controller.
-            // For now, enforce postedById = user OR admin roles.
             $role = $user->role ?? null;
             $isAdmin = in_array($role, ['SUPER_ADMIN', 'HR_MANAGER', 'MODERATOR'], true);
             if (!$isAdmin && ($job['postedById'] ?? null) !== $user->id) {
@@ -48,18 +43,15 @@ class JobProfileRequirements extends BaseController
                 return $this->fail('requirementKeys must be an array', 400);
             }
 
-            // Validate keys
             $allowed = ProfileRequirementKeys::all();
             $keys = array_values(array_unique(array_filter($keys, fn($k) => in_array($k, $allowed, true))));
 
             $m = new JobProfileRequirement();
-
-            // Replace strategy (simple + safe)
             $db = \Config\Database::connect();
+
             $db->transStart();
 
             $m->where('jobId', $jobId)->delete();
-
             foreach ($keys as $k) {
                 $m->insert([
                     'id' => uniqid('jpr_'),
@@ -70,18 +62,15 @@ class JobProfileRequirements extends BaseController
                 ]);
             }
 
-            // ── NEW: also save extended config if provided ─────────────────────────────
             if (isset($payload['config']) && is_array($payload['config'])) {
                 $this->saveConfig($db, $jobId, $payload['config']);
             }
-            // ─────────────────────────────────────────────────────────────────────────
 
             $db->transComplete();
             if ($db->transStatus() === false) {
                 return $this->fail('Failed to save requirements', 500);
             }
 
-            // Build response data including config
             $configData = $this->buildConfigResponse($jobId);
 
             return $this->respond([
@@ -100,8 +89,7 @@ class JobProfileRequirements extends BaseController
     }
 
     // =========================================================
-    // EXISTING: Get requirement keys
-    // ── UPDATED: also returns config data ──────────────────────
+    // Get requirement keys
     // =========================================================
     public function get($jobId = null)
     {
@@ -113,9 +101,7 @@ class JobProfileRequirements extends BaseController
             $rows = $m->where('jobId', $jobId)->where('isRequired', 1)->findAll();
             $keys = array_values(array_map(fn($r) => $r['requirementKey'], $rows));
 
-            // ── NEW: include config data in response ───────────────────────────────────
             $configData = $this->buildConfigResponse($jobId);
-            // ─────────────────────────────────────────────────────────────────────────
 
             return $this->respond([
                 'success' => true,
@@ -132,8 +118,7 @@ class JobProfileRequirements extends BaseController
     }
 
     // =========================================================
-    // NEW: Upsert job application config only
-    // PUT /jobs/{jobId}/application-config
+    // Upsert job application config only
     // =========================================================
     public function upsertConfig($jobId = null)
     {
@@ -141,7 +126,6 @@ class JobProfileRequirements extends BaseController
             $user = $this->request->user ?? null;
             if (!$user)
                 return $this->fail('Unauthorized', 401);
-
             if (!$jobId)
                 return $this->fail('Job ID is required', 400);
 
@@ -157,7 +141,6 @@ class JobProfileRequirements extends BaseController
             }
 
             $payload = $this->request->getJSON(true) ?? [];
-
             $db = \Config\Database::connect();
             $this->saveConfig($db, $jobId, $payload);
 
@@ -166,10 +149,7 @@ class JobProfileRequirements extends BaseController
             return $this->respond([
                 'success' => true,
                 'message' => 'Job application config saved',
-                'data' => [
-                    'jobId' => $jobId,
-                    'config' => $configData,
-                ],
+                'data' => ['jobId' => $jobId, 'config' => $configData],
             ]);
         } catch (\Exception $e) {
             log_message('error', 'upsertConfig error: ' . $e->getMessage());
@@ -178,8 +158,7 @@ class JobProfileRequirements extends BaseController
     }
 
     // =========================================================
-    // NEW: Get job application config only
-    // GET /jobs/{jobId}/application-config
+    // Get job application config only
     // =========================================================
     public function getConfig($jobId = null)
     {
@@ -192,10 +171,7 @@ class JobProfileRequirements extends BaseController
             return $this->respond([
                 'success' => true,
                 'message' => 'Job application config',
-                'data' => [
-                    'jobId' => $jobId,
-                    'config' => $configData,
-                ],
+                'data' => ['jobId' => $jobId, 'config' => $configData],
             ]);
         } catch (\Exception $e) {
             log_message('error', 'getConfig error: ' . $e->getMessage());
@@ -211,17 +187,15 @@ class JobProfileRequirements extends BaseController
         $configModel = new JobApplicationConfig();
         $existing = $configModel->where('jobId', $jobId)->first();
 
-        // Validate and sanitize education levels
-        $validEduLevels = ProfileRequirementKeys::educationLevels();
+        // ── Validate education levels (static + DB) ──────────────────────────
         $requiredEduLevels = [];
         if (!empty($data['requiredEducationLevels']) && is_array($data['requiredEducationLevels'])) {
-            $requiredEduLevels = array_values(array_filter(
-                $data['requiredEducationLevels'],
-                fn($l) => in_array($l, $validEduLevels, true)
-            ));
+            $requiredEduLevels = ProfileRequirementKeys::validateEducationLevels(
+                $data['requiredEducationLevels']
+            );
         }
 
-        // Validate section order
+        // ── Validate section order ────────────────────────────────────────────
         $validSectionKeys = ProfileRequirementKeys::sectionKeys();
         $sectionOrder = [];
         if (!empty($data['sectionOrder']) && is_array($data['sectionOrder'])) {
@@ -230,7 +204,6 @@ class JobProfileRequirements extends BaseController
                 fn($s) => in_array($s, $validSectionKeys, true)
             ));
         }
-        // Fill in any missing section keys at the end (preserve existing order)
         foreach ($validSectionKeys as $key) {
             if (!in_array($key, $sectionOrder, true)) {
                 $sectionOrder[] = $key;
@@ -260,26 +233,24 @@ class JobProfileRequirements extends BaseController
     }
 
     // =========================================================
-    // PRIVATE: Build config response (normalized + decoded JSON)
+    // PRIVATE: Build config response
     // =========================================================
     private function buildConfigResponse(string $jobId): array
     {
         $configModel = new JobApplicationConfig();
         $row = $configModel->where('jobId', $jobId)->first();
 
-        $defaults = [
-            'refereesRequired' => 0,
-            'requiredEducationLevels' => [],
-            'generalExperienceText' => '',
-            'specificExperienceText' => '',
-            'showGeneralExperience' => false,
-            'showSpecificExperience' => false,
-            'sectionOrder' => ProfileRequirementKeys::defaultSectionOrder(),
-            'showDescription' => true,
-        ];
-
         if (!$row) {
-            return $defaults;
+            return [
+                'refereesRequired' => 0,
+                'requiredEducationLevels' => [],
+                'generalExperienceText' => '',
+                'specificExperienceText' => '',
+                'showGeneralExperience' => false,
+                'showSpecificExperience' => false,
+                'sectionOrder' => ProfileRequirementKeys::defaultSectionOrder(),
+                'showDescription' => true,
+            ];
         }
 
         return [
