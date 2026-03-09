@@ -338,6 +338,16 @@ $routes->group('api/admin/education-qualification-levels', ['namespace' => 'App\
     $routes->delete('(:segment)', 'EducationQualificationLevels::destroy/$1');
 });
 
+$routes->group('api/analytics', ['namespace' => 'App\Controllers\Analytics', 'filter' => 'auth'], function ($routes) {
+    $routes->get('overview', 'Analytics::getOverview');
+    $routes->get('growth-trends', 'Analytics::getGrowthTrends');
+    $routes->get('jobs', 'Analytics::getJobAnalytics');
+    $routes->get('applications', 'Analytics::getApplicationAnalytics');
+    $routes->get('candidates', 'Analytics::getCandidateAnalytics');
+    $routes->get('top-performers', 'Analytics::getTopPerformers');
+    $routes->get('export', 'Analytics::exportReport');
+});
+
 // Admin Routes
 $routes->group('api/admin', ['namespace' => 'App\Controllers\Admin', 'filter' => 'auth'], function ($routes) {
     $routes->post('upload', 'Admin::uploadFile');
