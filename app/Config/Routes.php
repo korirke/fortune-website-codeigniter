@@ -346,6 +346,9 @@ $routes->group('api/analytics', ['namespace' => 'App\Controllers\Analytics', 'fi
     $routes->get('candidates', 'Analytics::getCandidateAnalytics');
     $routes->get('top-performers', 'Analytics::getTopPerformers');
     $routes->get('export', 'Analytics::exportReport');
+    $routes->get('export/xlsx', 'Analytics::exportReportXlsx');
+    $routes->get('job-selector', 'Analytics::getJobSelector');
+    $routes->get('job/(:segment)', 'Analytics::getJobAnalyticsByJob/$1');
 });
 
 // Admin Routes
