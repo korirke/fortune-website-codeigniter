@@ -591,3 +591,49 @@ $routes->get('public/(:any)', function ($filename) {
     // File not found
     throw \CodeIgniter\Exceptions\PageNotFoundException::forPageNotFound();
 });
+
+
+// ── Settings ─────────────────────────────────────────────────────────────────
+$routes->group('api/settings', ['filter' => 'auth'], function ($routes) {
+    $routes->get('public', 'Settings\SettingsController::getPublicSettings');   // no auth override below
+    $routes->get('group/(:segment)', 'Settings\SettingsController::getByGroup/$1');
+    $routes->get('(:segment)', 'Settings\SettingsController::getSetting/$1');
+    $routes->get('/', 'Settings\SettingsController::getAllSettings');
+    $routes->put('/', 'Settings\SettingsController::bulkUpdate');
+    $routes->post('test-email', 'Settings\SettingsController::testEmailConfig');
+});
+
+// Public settings (no auth)
+$routes->get('api/settings/public', 'Settings\SettingsController::getPublicSettings');
+
+// ── Job Alerts ────────────────────────────────────────────────────────────────
+$routes->group('api/alerts', [
+    'namespace' => 'App\Controllers\Alerts',
+    'filter' => 'auth'
+], function ($routes) {
+
+    // Put specific routes FIRST
+    $routes->get('preferences', 'AlertsController::getPreferences');
+    $routes->put('preferences', 'AlertsController::updatePreferences');
+
+    // Then the parameterized routes
+    $routes->get('/', 'AlertsController::getAlerts');
+    $routes->post('/', 'AlertsController::createAlert');
+    $routes->put('(:segment)', 'AlertsController::updateAlert/$1');
+    $routes->delete('(:segment)', 'AlertsController::deleteAlert/$1');
+    $routes->patch('(:segment)/toggle', 'AlertsController::toggleAlert/$1');
+});
+// Unsubscribe – public, no auth
+$routes->get('unsubscribe', 'Alerts\AlertsController::unsubscribe');
+
+// ── Communications ────────────────────────────────────────────────────────────
+$routes->group('api/communications', ['filter' => 'auth'], function ($routes) {
+    $routes->post('newsletter/send', 'Communications\CommunicationsController::sendNewsletter');
+    $routes->get('newsletter/history', 'Communications\CommunicationsController::getHistory');
+    $routes->get('templates', 'Communications\CommunicationsController::getTemplates');
+    $routes->get('templates/(:segment)', 'Communications\CommunicationsController::getTemplate/$1');
+    $routes->put('templates/(:segment)', 'Communications\CommunicationsController::updateTemplate/$1');
+    $routes->get('queue', 'Communications\CommunicationsController::getQueue');
+    $routes->delete('queue/(:segment)', 'Communications\CommunicationsController::cancelQueued/$1');
+    $routes->get('stats', 'Communications\CommunicationsController::getStats');
+});
