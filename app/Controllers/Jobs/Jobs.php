@@ -484,6 +484,17 @@ class Jobs extends BaseController
                 'status' => $status
             ]);
 
+            if ($status === 'ACTIVE') {
+                // Job posted directly as active – trigger instant alerts now
+                try {
+                    $alertService = new \App\Services\AlertService();
+                    $alertService->onJobPublished($jobData);
+                } catch (\Throwable $e) {
+                    // Non-fatal – don't block response
+                    log_message('error', 'Alert trigger error on job create: ' . $e->getMessage());
+                }
+            }
+
             return $this->respondCreated([
                 'success' => true,
                 'message' => $status === 'DRAFT'
@@ -799,6 +810,15 @@ class Jobs extends BaseController
                 'newStatus' => $newStatus,
             ]);
 
+            if ($newStatus === 'ACTIVE') {
+                try {
+                    $alertService = new \App\Services\AlertService();
+                    $alertService->onJobPublished($updatedJob);
+                } catch (\Throwable $e) {
+                    log_message('error', 'Alert trigger error on status change: ' . $e->getMessage());
+                }
+            }
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Job status updated successfully',
@@ -1058,6 +1078,15 @@ class Jobs extends BaseController
             $jobModel->update($id, $updateData);
 
             $updatedJob = $this->getJobWithRelations($id);
+
+            if ($status === 'ACTIVE') {
+                try {
+                    $alertService = new \App\Services\AlertService();
+                    $alertService->onJobPublished($updatedJob);
+                } catch (\Throwable $e) {
+                    log_message('error', 'Alert trigger error on job approval: ' . $e->getMessage());
+                }
+            }
 
             $this->logAudit($user->id, $status === 'ACTIVE' ? 'JOB_APPROVED' : 'JOB_REJECTED', 'Job', $id, [
                 'status' => $status,
