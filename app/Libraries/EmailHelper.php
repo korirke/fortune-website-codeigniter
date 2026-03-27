@@ -2,17 +2,22 @@
 
 namespace App\Libraries;
 
+use App\Services\SettingService;
 use Config\Services;
 
+/**
+ * EmailHelper
+ * Every method now reads config from SettingService (DB) instead of env().
+ * If DB is unavailable, SettingService automatically falls back to env().
+ *
+ */
 class EmailHelper
 {
     protected $email;
-    protected $config;
 
     public function __construct()
     {
-        $this->email  = Services::email();
-        $this->config = config('Email');
+        $this->email = Services::email();
     }
 
     // ============================================================
@@ -24,15 +29,10 @@ class EmailHelper
      */
     public function sendEmail($to, $subject, $message, $isHtml = true, $attachments = [])
     {
-        return $this->sendEmailWithFrom(
-            $to,
-            $subject,
-            $message,
-            $isHtml,
-            $attachments,
-            $this->config->fromEmail,
-            $this->config->fromName
-        );
+        $fromEmail = SettingService::get('EMAIL_FROM_DEFAULT', env('email_from', 'noreply@fortunekenya.com'));
+        $fromName  = SettingService::get('EMAIL_FROM_NAME',    env('email_fromName', 'Fortune Technologies Limited'));
+
+        return $this->sendEmailWithFrom($to, $subject, $message, $isHtml, $attachments, $fromEmail, $fromName);
     }
 
     /**
@@ -41,8 +41,8 @@ class EmailHelper
      */
     public function sendSalesEmail($to, $subject, $message, $isHtml = true, $attachments = [])
     {
-        $fromEmail = env('email_from', 'sales@fortunekenya.com');
-        $fromName  = env('email_fromName', 'Fortune Technologies Limited');
+        $fromEmail = SettingService::get('EMAIL_SALES',     env('email_from', 'sales@fortunekenya.com'));
+        $fromName  = SettingService::get('EMAIL_FROM_NAME', env('email_fromName', 'Fortune Technologies Limited'));
 
         return $this->sendEmailWithFrom($to, $subject, $message, $isHtml, $attachments, $fromEmail, $fromName);
     }
@@ -53,22 +53,32 @@ class EmailHelper
      */
     public function sendRecruitmentEmail($to, $subject, $message, $isHtml = true, $attachments = [])
     {
-        $fromEmail = env('email_fromRecruitment', 'headhunting@fortunekenya.com');
-        $fromName  = env('email_fromRecruitmentName', 'Fortune Kenya Recruitment');
+        $fromEmail = SettingService::get('EMAIL_FROM_RECRUITMENT',      env('email_fromRecruitment', 'headhunting@fortunekenya.com'));
+        $fromName  = SettingService::get('EMAIL_FROM_RECRUITMENT_NAME', env('email_fromRecruitmentName', 'Fortune Kenya Recruitment'));
 
         return $this->sendEmailWithFrom($to, $subject, $message, $isHtml, $attachments, $fromEmail, $fromName);
     }
 
     /**
-     * Low-level send with UTF-8 sanitization and ICS support
+     * Low-level send with UTF-8 sanitization and ICS support.
+     * Re-initialises email with fresh DB config on every call.
      */
     protected function sendEmailWithFrom($to, $subject, $message, $isHtml = true, $attachments = [], $fromEmail = null, $fromName = null)
     {
+        // ── Master kill-switch ────────────────────────────────────────────────
+        if (!SettingService::bool('EMAIL_NOTIFICATIONS_ENABLED', true)) {
+            log_message('info', 'EmailHelper: notifications disabled, skipping send to ' . $to);
+            return ['success' => false, 'error' => 'Email notifications are currently disabled.'];
+        }
+
         try {
+            // ── Re-initialise with fresh DB SMTP config ───────────────────────
+            $smtpConfig = SettingService::getEmailConfig();
+            $this->email->initialize($smtpConfig);
             $this->email->clear(true);
 
-            $fromEmail = $fromEmail ?? $this->config->fromEmail;
-            $fromName  = $fromName ?? $this->config->fromName;
+            $fromEmail = $fromEmail ?? SettingService::get('EMAIL_FROM_DEFAULT', 'noreply@fortunekenya.com');
+            $fromName  = $fromName  ?? SettingService::get('EMAIL_FROM_NAME', 'Fortune Technologies');
 
             // ✅ SANITIZE ALL TEXT INPUTS
             $subject   = $this->cleanUtf8($subject);
@@ -92,7 +102,6 @@ class EmailHelper
             // ✅ SET PROPER CONTENT TYPE FOR ICS
             if ($hasIcsAttachment) {
                 $this->email->setMailType('html');
-                // Force multipart/mixed for calendar invites
                 $this->email->setAltMessage(strip_tags($message));
             } else {
                 $this->email->setMailType($isHtml ? 'html' : 'text');
@@ -131,11 +140,13 @@ class EmailHelper
 
             if ($this->email->send()) {
                 log_message('info', 'Email sent successfully to: ' . $to);
+                $this->logEmail($to, $subject, 'SENT');
                 return ['success' => true, 'message' => 'Email sent successfully'];
             }
 
             $debug = $this->email->printDebugger(['headers', 'subject', 'body']);
             log_message('error', 'Email send failed: ' . $debug);
+            $this->logEmail($to, $subject, 'FAILED', $debug);
 
             return [
                 'success' => false,
@@ -145,6 +156,7 @@ class EmailHelper
         } catch (\Throwable $e) {
             log_message('error', 'Email sending failed: ' . $e->getMessage());
             log_message('error', 'Stack trace: ' . $e->getTraceAsString());
+            $this->logEmail($to, $subject ?? '', 'FAILED', $e->getMessage());
             return ['success' => false, 'error' => $e->getMessage()];
         }
     }
@@ -154,20 +166,17 @@ class EmailHelper
      */
     private function cleanUtf8(string $text): string
     {
-        // Remove null bytes
         $text = str_replace("\0", '', $text);
-        
-        // Convert to UTF-8 if needed
+
         if (!mb_check_encoding($text, 'UTF-8')) {
             $detected = mb_detect_encoding($text, ['UTF-8', 'ISO-8859-1', 'ASCII', 'Windows-1252'], true);
             if ($detected && $detected !== 'UTF-8') {
                 $text = mb_convert_encoding($text, 'UTF-8', $detected);
             }
         }
-        
-        // Remove invalid UTF-8 sequences by round-trip conversion
+
         $text = mb_convert_encoding($text, 'UTF-8', 'UTF-8');
-        
+
         return trim($text);
     }
 
@@ -178,6 +187,7 @@ class EmailHelper
     public function wrapEmailHtml(string $title, string $innerHtml): string
     {
         $safeTitle = htmlspecialchars($this->cleanUtf8($title), ENT_QUOTES, 'UTF-8');
+        $appName   = htmlspecialchars(SettingService::get('APP_NAME', 'Fortune Technologies'), ENT_QUOTES, 'UTF-8');
         $innerHtml = $this->cleanUtf8($innerHtml);
 
         return "<!DOCTYPE html>
@@ -197,7 +207,7 @@ class EmailHelper
       </div>
 
       <div style='margin-top:18px; font-size:12px; color:#5f6368;'>
-        This is an automated email. Please do not reply directly to this message.
+        This is an automated email from {$appName}. Please do not reply directly to this message.
       </div>
     </div>
   </div>
@@ -251,21 +261,22 @@ If the button doesn't work, click: <a href='{$safeUrl}'>{$safeText}</a>
     {
         $frontendUrl     = $this->getFrontendUrl();
         $verificationUrl = $frontendUrl . '/verify-email?token=' . rawurlencode((string)$verificationToken);
+        $appName         = SettingService::get('APP_NAME', 'Fortune Technologies');
 
-        $subject = 'Verify Your Email Address - Fortune Technologies';
+        $subject = 'Verify Your Email Address - ' . $appName;
 
         $inner = "
 <p>Dear " . htmlspecialchars($this->cleanUtf8((string)$name)) . ",</p>
-<p>Thank you for registering with Fortune Technologies. Please verify your email address by clicking the button below:</p>
+<p>Thank you for registering with {$appName}. Please verify your email address by clicking the button below:</p>
 " . $this->renderCtaButton('Verify Email', $verificationUrl) . "
 " . $this->renderHiddenTokenLink($verificationUrl, 'Verify your email address') . "
 <p style='margin-top:10px;'>This link will expire in 24 hours.</p>
-<p>Best regards,<br>Fortune Technologies Team</p>";
+<p>Best regards,<br>{$appName} Team</p>";
 
         $html = $this->wrapEmailHtml('Verify Your Email', $inner);
 
-        $fromEmail = env('email_fromAuth', env('email_from', $this->config->fromEmail));
-        $fromName  = env('email_fromAuthName', env('email_fromName', $this->config->fromName));
+        $fromEmail = SettingService::get('EMAIL_FROM_AUTH', env('email_fromAuth', env('email_from', 'noreply@fortunekenya.com')));
+        $fromName  = SettingService::get('EMAIL_FROM_NAME', env('email_fromName', 'Fortune Technologies'));
 
         return $this->sendEmailWithFrom($to, $subject, $html, true, [], $fromEmail, $fromName);
     }
@@ -274,8 +285,9 @@ If the button doesn't work, click: <a href='{$safeUrl}'>{$safeText}</a>
     {
         $frontendUrl = $this->getFrontendUrl();
         $resetUrl    = $frontendUrl . '/reset-password?token=' . rawurlencode((string)$resetToken);
+        $appName     = SettingService::get('APP_NAME', 'Fortune Technologies');
 
-        $subject = 'Reset Your Password - Fortune Technologies';
+        $subject = 'Reset Your Password - ' . $appName;
 
         $inner = "
 <p>Dear " . htmlspecialchars($this->cleanUtf8((string)$name)) . ",</p>
@@ -283,12 +295,12 @@ If the button doesn't work, click: <a href='{$safeUrl}'>{$safeText}</a>
 " . $this->renderCtaButton('Reset Password', $resetUrl) . "
 " . $this->renderHiddenTokenLink($resetUrl, 'Reset your password') . "
 <p style='margin-top:10px;'>This link will expire in 1 hour. If you didn't request this, please ignore this email.</p>
-<p>Best regards,<br>Fortune Technologies Team</p>";
+<p>Best regards,<br>{$appName} Team</p>";
 
         $html = $this->wrapEmailHtml('Reset Your Password', $inner);
 
-        $fromEmail = env('email_fromAuth', env('email_from', $this->config->fromEmail));
-        $fromName  = env('email_fromAuthName', env('email_fromName', $this->config->fromName));
+        $fromEmail = SettingService::get('EMAIL_FROM_AUTH', env('email_fromAuth', env('email_from', 'noreply@fortunekenya.com')));
+        $fromName  = SettingService::get('EMAIL_FROM_NAME', env('email_fromName', 'Fortune Technologies'));
 
         return $this->sendEmailWithFrom($to, $subject, $html, true, [], $fromEmail, $fromName);
     }
@@ -301,22 +313,23 @@ If the button doesn't work, click: <a href='{$safeUrl}'>{$safeText}</a>
     {
         $amountHtml  = $quoteAmount ? "<p><strong>Quote Amount:</strong> " . htmlspecialchars($currency) . " " . number_format((float)$quoteAmount, 2) . "</p>" : '';
         $companyHtml = $company ? "<p><strong>Company:</strong> " . htmlspecialchars($this->cleanUtf8($company)) . "</p>" : '';
+        $appName     = SettingService::get('APP_NAME', 'Fortune Technologies Limited');
 
         $inner = "
 <p>Dear " . htmlspecialchars($this->cleanUtf8((string)$recipientName)) . ",</p>
 {$companyHtml}
 <p>" . nl2br(htmlspecialchars($this->cleanUtf8((string)$message))) . "</p>
 {$amountHtml}
-<p>Best regards,<br>Fortune Technologies Team</p>";
+<p>Best regards,<br>{$appName} Team</p>";
 
-        $html = $this->wrapEmailHtml('Fortune Technologies Limited', $inner);
+        $html = $this->wrapEmailHtml($appName, $inner);
 
         return $this->sendEmail($to, $subject, $html, true, $attachments);
     }
 
     public function notifyAdminNewQuote($quoteRequest)
     {
-        $adminEmail = env('email_adminEmail', 'support@fortunekenya.com');
+        $adminEmail = SettingService::get('EMAIL_ADMIN_INBOX', env('email_adminEmail', 'support@fortunekenya.com'));
         $subject    = 'New Quote Request from ' . ($quoteRequest['company'] ?? $quoteRequest['name'] ?? 'Unknown');
 
         $services = is_array($quoteRequest['services'] ?? null)
@@ -346,7 +359,7 @@ If the button doesn't work, click: <a href='{$safeUrl}'>{$safeText}</a>
 
     public function notifyAdminNewContact($contactData)
     {
-        $adminEmail = env('email_adminEmail', 'support@fortunekenya.com');
+        $adminEmail = SettingService::get('EMAIL_ADMIN_INBOX', env('email_adminEmail', 'support@fortunekenya.com'));
         $subject    = 'New Contact Form Submission from ' . ($contactData['name'] ?? 'Website Visitor');
 
         $inner = "
@@ -368,7 +381,7 @@ If the button doesn't work, click: <a href='{$safeUrl}'>{$safeText}</a>
 
     public function notifyAdminNewApplication($applicationData)
     {
-        $adminEmail = env('email_adminRecruitmentInbox', 'headhunting@fortunekenya.com');
+        $adminEmail = SettingService::get('EMAIL_FROM_RECRUITMENT', env('email_adminRecruitmentInbox', 'headhunting@fortunekenya.com'));
         $subject = 'New Job Application - ' . ($applicationData['job']['title'] ?? 'Unknown Position');
 
         $html = $this->generateAdminApplicationNotificationHtml($applicationData);
@@ -377,10 +390,8 @@ If the button doesn't work, click: <a href='{$safeUrl}'>{$safeText}</a>
         if (!empty($applicationData['profile']['resumeUrl'])) {
             $resumeUrl  = (string)$applicationData['profile']['resumeUrl'];
 
-            // Try public path first
             $resumePath = rtrim(FCPATH, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . ltrim($resumeUrl, '/\\');
 
-            // fallback to previous behavior
             if (!file_exists($resumePath)) {
                 $resumePath = WRITEPATH . '../public' . $resumeUrl;
             }
@@ -390,7 +401,6 @@ If the button doesn't work, click: <a href='{$safeUrl}'>{$safeText}</a>
             }
         }
 
-        // Recruitment operations should come from recruitment mailbox
         return $this->sendRecruitmentEmail($adminEmail, $subject, $html, true, $attachments);
     }
 
@@ -464,7 +474,8 @@ If the button doesn't work, click: <a href='{$safeUrl}'>{$safeText}</a>
             ? htmlspecialchars(date('F j, Y', strtotime($applicationData['availableStartDate'])))
             : 'N/A';
 
-        $frontendUrl = $this->getFrontendUrl();
+        $frontendUrl    = $this->getFrontendUrl();
+        $recruitmentEmail = SettingService::get('EMAIL_FROM_RECRUITMENT', 'headhunting@fortunekenya.com');
 
         $inner = "
 <p>Dear " . htmlspecialchars($candidateName) . ",</p>
@@ -481,7 +492,7 @@ If the button doesn't work, click: <a href='{$safeUrl}'>{$safeText}</a>
 <p style='margin-top:16px;'><strong>Next Steps</strong></p>
 <ul>
   <li>Our recruitment team will review your application.</li>
-  <li>If shortlisted, you will receive an interview email from <strong>headhunting@fortunekenya.com</strong>.</li>
+  <li>If shortlisted, you will receive an interview email from <strong>{$recruitmentEmail}</strong>.</li>
   <li>Please keep your profile and CV updated for the best chance of shortlisting.</li>
 </ul>
 
@@ -489,7 +500,7 @@ If the button doesn't work, click: <a href='{$safeUrl}'>{$safeText}</a>
 
 <p>Kind regards,<br>
 <strong>Fortune Kenya Recruitment Team</strong><br>
-headhunting@fortunekenya.com<br>
+{$recruitmentEmail}<br>
 <a href='" . htmlspecialchars($frontendUrl) . "'>" . htmlspecialchars($frontendUrl) . "</a></p>
 ";
 
@@ -515,7 +526,8 @@ headhunting@fortunekenya.com<br>
         $companyName = $this->cleanUtf8($job['company']['name'] ?? 'Fortune Kenya');
         $subject     = 'Update on Your Application - ' . $jobTitle;
 
-        $frontendUrl = $this->getFrontendUrl();
+        $frontendUrl      = $this->getFrontendUrl();
+        $recruitmentEmail = SettingService::get('EMAIL_FROM_RECRUITMENT', 'headhunting@fortunekenya.com');
 
         $inner = "
 <p>Dear " . htmlspecialchars($candidateName) . ",</p>
@@ -535,7 +547,7 @@ headhunting@fortunekenya.com<br>
 
 <p>Kind regards,<br>
 <strong>Fortune Kenya Recruitment Team</strong><br>
-headhunting@fortunekenya.com<br>
+{$recruitmentEmail}<br>
 <a href='" . htmlspecialchars($frontendUrl) . "'>" . htmlspecialchars($frontendUrl) . "</a></p>
 ";
 
@@ -557,7 +569,7 @@ headhunting@fortunekenya.com<br>
         try {
             $candidateName = $this->cleanUtf8((string)$candidateName);
             $jobTitle      = $this->cleanUtf8((string)$jobTitle);
-            
+
             $timezone        = $details['timezone'] ?? 'Africa/Nairobi';
             $durationMinutes = (int)($details['duration'] ?? 60);
             $type            = $this->cleanUtf8($details['type'] ?? 'VIDEO');
@@ -571,6 +583,8 @@ headhunting@fortunekenya.com<br>
             $meetingLink = isset($details['meetingLink']) ? $this->cleanUtf8((string)$details['meetingLink']) : null;
             $location    = isset($details['location']) ? $this->cleanUtf8((string)$details['location']) : null;
             $notes       = isset($details['notes']) ? $this->cleanUtf8((string)$details['notes']) : null;
+
+            $recruitmentEmail = SettingService::get('EMAIL_FROM_RECRUITMENT', 'headhunting@fortunekenya.com');
 
             $linkHtml = $meetingLink
                 ? "<p><strong>Meeting Link:</strong> <a href='" . htmlspecialchars($meetingLink) . "'>" . htmlspecialchars($meetingLink) . "</a></p>"
@@ -600,14 +614,17 @@ headhunting@fortunekenya.com<br>
 
 <p style='margin-bottom:0;'><strong>Calendar Invite:</strong> Attached (.ics) — click to add it to Google/Outlook/Apple Calendar.</p>
 
-<p>If you have a question, please contact us at <strong>headhunting@fortunekenya.com</strong>.</p>
+<p>If you have a question, please contact us at <strong>{$recruitmentEmail}</strong>.</p>
 
 <p>Kind regards,<br>
 <strong>Fortune Kenya Recruitment Team</strong><br>
-headhunting@fortunekenya.com</p>
+{$recruitmentEmail}</p>
 ";
 
             $html = $this->wrapEmailHtml('Interview Invitation', $inner);
+
+            $organizerEmail = SettingService::get('EMAIL_FROM_RECRUITMENT', 'headhunting@fortunekenya.com');
+            $organizerName  = SettingService::get('EMAIL_FROM_RECRUITMENT_NAME', 'Fortune Kenya Recruitment');
 
             $icsContent = $this->generateInterviewIcsGmailSafe([
                 'uid'             => uniqid('interview_', true) . '@fortunekenya.com',
@@ -618,8 +635,8 @@ headhunting@fortunekenya.com</p>
                 'startLocal'      => $scheduledAtClean,
                 'timezone'        => $timezone,
                 'durationMinutes' => $durationMinutes,
-                'organizerEmail'  => env('email_fromRecruitment', 'headhunting@fortunekenya.com'),
-                'organizerName'   => env('email_fromRecruitmentName', 'Fortune Kenya Recruitment'),
+                'organizerEmail'  => $organizerEmail,
+                'organizerName'   => $organizerName,
                 'attendeeEmail'   => (string)$to,
                 'attendeeName'    => $candidateName,
                 'calName'         => 'Fortune Kenya Interviews',
@@ -632,8 +649,7 @@ headhunting@fortunekenya.com</p>
             }
 
             $icsPath = $tmpDir . 'interview_' . time() . '_' . mt_rand(1000, 9999) . '.ics';
-            
-            // ✅ WRITE WITH BINARY MODE TO PRESERVE ENCODING
+
             $bytesWritten = file_put_contents($icsPath, $icsContent, LOCK_EX);
 
             if ($bytesWritten === false || !file_exists($icsPath) || !is_readable($icsPath)) {
@@ -655,17 +671,17 @@ headhunting@fortunekenya.com</p>
         } catch (\Throwable $e) {
             log_message('error', 'Interview invitation failed: ' . $e->getMessage());
             log_message('error', 'Stack trace: ' . $e->getTraceAsString());
-            
+
             if ($html) {
                 return $this->sendRecruitmentEmail($to, $subject, $html, true);
             }
-            
+
             return ['success' => false, 'error' => $e->getMessage()];
         }
     }
 
     // ============================================================
-    // ICS GENERATION 
+    // ICS GENERATION
     // ============================================================
 
     protected function generateInterviewIcsGmailSafe(array $data): string
@@ -749,35 +765,35 @@ headhunting@fortunekenya.com</p>
         $lines[] = 'END:VEVENT';
         $lines[] = 'END:VCALENDAR';
 
-        // ✅ CRITICAL: Use CRLF exactly (RFC 5545 requirement)
         return implode("\r\n", $lines) . "\r\n";
     }
 
     protected function buildIcsDescription(string $jobTitle, array $details): string
     {
         $jobTitle = $this->cleanUtf8($jobTitle);
-        
+        $recruitmentEmail = SettingService::get('EMAIL_FROM_RECRUITMENT', 'headhunting@fortunekenya.com');
+
         $parts = [];
         $parts[] = "Interview for: {$jobTitle}";
-        
+
         if (!empty($details['type'])) {
             $parts[] = "Type: " . str_replace('_', ' ', $this->cleanUtf8((string)$details['type']));
         }
-        
+
         if (!empty($details['meetingLink'])) {
             $parts[] = "Meeting Link: " . $this->cleanUtf8((string)$details['meetingLink']);
         }
-        
+
         if (!empty($details['location'])) {
             $parts[] = "Location: " . $this->cleanUtf8((string)$details['location']);
         }
-        
+
         if (!empty($details['notes'])) {
             $cleanNotes = preg_replace("/\r\n|\r|\n/", " ", $this->cleanUtf8((string)$details['notes']));
             $parts[] = "Notes: " . $cleanNotes;
         }
-        
-        $parts[] = "Contact: headhunting@fortunekenya.com";
+
+        $parts[] = "Contact: " . $recruitmentEmail;
 
         return implode("\n", $parts);
     }
@@ -787,15 +803,13 @@ headhunting@fortunekenya.com</p>
      */
     protected function escapeIcsText(string $text): string
     {
-        // Normalize line breaks
         $text = preg_replace("/\r\n|\r|\n/", "\n", $text);
-        
-        // Escape special characters in order
-        $text = str_replace('\\', '\\\\', $text);  // Backslash first
-        $text = str_replace(';', '\;', $text);     // Semicolon
-        $text = str_replace(',', '\,', $text);     // Comma
-        $text = str_replace("\n", '\n', $text);    // Newline
-        
+
+        $text = str_replace('\\', '\\\\', $text);
+        $text = str_replace(';', '\;', $text);
+        $text = str_replace(',', '\,', $text);
+        $text = str_replace("\n", '\n', $text);
+
         return $text;
     }
 
@@ -806,15 +820,12 @@ headhunting@fortunekenya.com</p>
     public function normalizeDateTimeString(string $input): string
     {
         $s = trim($input);
-        
-        // Remove microseconds
+
         $s = preg_replace('/\.\d+$/', '', $s);
-        
-        // Normalize separators
+
         $s = str_replace('T', ' ', $s);
         $s = str_replace('Z', '', $s);
-        
-        // Remove extra spaces
+
         $s = preg_replace('/\s+/', ' ', $s);
 
         $ts = strtotime($s);
@@ -822,7 +833,7 @@ headhunting@fortunekenya.com</p>
             log_message('error', 'Invalid datetime string: ' . $input);
             return date('Y-m-d H:i:s');
         }
-        
+
         return date('Y-m-d H:i:s', $ts);
     }
 
@@ -843,7 +854,7 @@ headhunting@fortunekenya.com</p>
 
     protected function getFrontendUrl()
     {
-        $frontendUrl = env('FRONTEND_URL', '');
+        $frontendUrl = SettingService::get('FRONTEND_URL', env('FRONTEND_URL', ''));
 
         if (empty($frontendUrl)) {
             return rtrim(base_url(), '/');
@@ -854,5 +865,26 @@ headhunting@fortunekenya.com</p>
         }
 
         return rtrim($frontendUrl, '/');
+    }
+
+    // ============================================================
+    // EMAIL LOGGING
+    // ============================================================
+
+    private function logEmail(string $to, string $subject, string $status, ?string $error = null): void
+    {
+        try {
+            $db = \Config\Database::connect();
+            $db->table('email_logs')->insert([
+                'id'           => uniqid('elog_'),
+                'to'           => $to,
+                'subject'      => mb_substr($subject, 0, 191),
+                'status'       => $status,
+                'errorMessage' => $error ? mb_substr($error, 0, 500) : null,
+                'sentAt'       => date('Y-m-d H:i:s'),
+            ]);
+        } catch (\Throwable $e) {
+            // Non-fatal – don't break email flow for logging failure
+        }
     }
 }
