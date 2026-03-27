@@ -28,6 +28,8 @@ class User extends Model
         'resetPasswordExpires',
         'lastLoginAt',
         'lastLoginIp',
+        'emailNotifications',
+        'unsubscribeToken',
         'createdAt',
         'updatedAt'
     ];
