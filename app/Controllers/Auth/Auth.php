@@ -74,6 +74,8 @@ class Auth extends BaseController
         $data['role'] = $data['role'] ?? 'CANDIDATE';
         $data['status'] = $data['status'] ?? 'PENDING_VERIFICATION';
         $data['emailVerified'] = false;
+        $data['emailNotifications']   = (int)($data['emailNotifications'] ?? 1);
+        $data['unsubscribeToken']     = bin2hex(random_bytes(16));
 
         // Generate verification token
         $verificationToken = bin2hex(random_bytes(32));
