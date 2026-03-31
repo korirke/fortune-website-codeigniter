@@ -238,6 +238,8 @@ $routes->group('api/applications', ['namespace' => 'App\Controllers\Applications
 
     $routes->get('export/csv', 'Applications::exportApplicationsCsv');
     $routes->get('export/xlsx', 'Applications::exportApplicationsXlsx');
+    $routes->post('structured-longlist/generate', 'StructuredLonglist::generate');
+    $routes->post('structured-longlist/download', 'StructuredLonglist::download');
 });
 
 // Shortlist Routes
@@ -636,4 +638,19 @@ $routes->group('api/communications', ['filter' => 'auth'], function ($routes) {
     $routes->get('queue', 'Communications\CommunicationsController::getQueue');
     $routes->delete('queue/(:segment)', 'Communications\CommunicationsController::cancelQueued/$1');
     $routes->get('stats', 'Communications\CommunicationsController::getStats');
+});
+$routes->group('api/notifications', [
+    'namespace' => 'App\Controllers\Notifications',
+    'filter' => 'auth',
+], function ($routes) {
+    // Must be before (:segment) to avoid URL collision
+    $routes->get('unread-count', 'NotificationsController::getUnreadCount');
+    $routes->patch('mark-all-read', 'NotificationsController::markAllAsRead');
+    $routes->patch('mark-job-seen', 'NotificationsController::markJobApplicationsSeen');
+
+    // Paginated list
+    $routes->get('/', 'NotificationsController::getNotifications');
+
+    // Single notification read
+    $routes->patch('(:segment)/read', 'NotificationsController::markAsRead/$1');
 });
