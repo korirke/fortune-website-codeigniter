@@ -5,6 +5,7 @@ namespace App\Controllers\Jobs;
 use App\Controllers\BaseController;
 use App\Models\Job;
 use App\Models\JobCategory;
+use App\Models\JobApplicationReadMarker;
 use App\Traits\NormalizedResponseTrait;
 
 class Jobs extends BaseController
@@ -179,7 +180,6 @@ class Jobs extends BaseController
         if (!$job)
             return [];
 
-        // Company
         $companyModel = new \App\Models\Company();
         $job['company'] = $companyModel
             ->select('id, name, slug, logo, location, description, website, industry, companySize, verified')
@@ -193,7 +193,6 @@ class Jobs extends BaseController
             $job['category'] = null;
         }
 
-        // Posted by
         $userModel = new \App\Models\User();
         $postedBy = $userModel->select('firstName, lastName, email')->find($job['postedById']);
         $job['postedBy'] = $postedBy ? [
@@ -241,10 +240,10 @@ class Jobs extends BaseController
         }
         $job['domains'] = $domains;
 
-        // Application count
         $applicationModel = new \App\Models\Application();
         $appCount = $applicationModel->where('jobId', $jobId)->countAllResults();
         $job['_count'] = ['applications' => $appCount];
+        $job['applicationCount'] = (int) ($job['applicationCount'] ?? $appCount);
 
         return $job;
     }
@@ -356,7 +355,6 @@ class Jobs extends BaseController
 
             $data = $this->request->getJSON(true) ?? [];
             $data = $this->normalizePayload($data);
-
             $isDraft = isset($data['isDraft']) ? (bool) $data['isDraft'] : false;
             unset($data['isDraft']);
 
@@ -371,8 +369,6 @@ class Jobs extends BaseController
             }
 
             $jobModel = new Job();
-
-            // Determine role
             $userModel = new \App\Models\User();
             $userData = $userModel->select('role')->find($user->id);
 
@@ -401,22 +397,17 @@ class Jobs extends BaseController
             $baseSlug = preg_replace('/^-|-$/', '', $baseSlug);
             $slug = $baseSlug . '-' . uniqid();
 
-            // Determine status
             $status = $this->determineJobStatus($data, $isDraft);
 
-            // Extract nested
             $skillIds = $data['skillIds'] ?? [];
             $domainIds = $data['domainIds'] ?? [];
             unset($data['skillIds'], $data['domainIds']);
-
-            $description = $data['description'];
-            $location = $data['location'];
 
             $jobData = [
                 'id' => uniqid('job_'),
                 'title' => $data['title'],
                 'slug' => $slug,
-                'description' => $description,
+                'description' => $data['description'],
                 'responsibilities' => $data['responsibilities'] ?? null,
                 'requirements' => $data['requirements'] ?? null,
                 'keySkillsAndCompetencies' => $data['keySkillsAndCompetencies'] ?? null,
@@ -425,7 +416,7 @@ class Jobs extends BaseController
                 'jdDocumentUrl' => $data['jdDocumentUrl'] ?? null,
                 'type' => $data['type'] ?? 'FULL_TIME',
                 'experienceLevel' => $data['experienceLevel'] ?? 'MID_LEVEL',
-                'location' => $location,
+                'location' => $data['location'],
                 'isRemote' => (bool) ($data['isRemote'] ?? false),
                 'salaryType' => $data['salaryType'] ?? 'NEGOTIABLE',
                 'salaryMin' => $data['salaryMin'] ?? null,
@@ -459,7 +450,7 @@ class Jobs extends BaseController
                         'jobId' => $jobData['id'],
                         'skillId' => $skillId,
                         'required' => true,
-                        'createdAt' => date('Y-m-d H:i:s')
+                        'createdAt' => date('Y-m-d H:i:s'),
                     ]);
                 }
             }
@@ -472,7 +463,7 @@ class Jobs extends BaseController
                         'id' => uniqid('jobdomain_'),
                         'jobId' => $jobData['id'],
                         'domainId' => $domainId,
-                        'createdAt' => date('Y-m-d H:i:s')
+                        'createdAt' => date('Y-m-d H:i:s'),
                     ]);
                 }
             }
@@ -481,7 +472,7 @@ class Jobs extends BaseController
 
             $this->logAudit($user->id, 'JOB_CREATED', 'Job', $jobData['id'], [
                 'title' => $jobData['title'],
-                'status' => $status
+                'status' => $status,
             ]);
 
             if ($status === 'ACTIVE') {
@@ -529,7 +520,6 @@ class Jobs extends BaseController
 
             $data = $this->request->getJSON(true) ?? [];
             $data = $this->normalizePayload($data);
-
             $isDraft = isset($data['isDraft']) ? (bool) $data['isDraft'] : false;
             unset($data['isDraft']);
 
@@ -573,7 +563,7 @@ class Jobs extends BaseController
                 'specificSalary',
                 'currency',
                 'categoryId',
-                'expiresAt'
+                'expiresAt',
             ];
 
             $updateData = $this->sanitizeUpdateData($data, $allowedFields);
@@ -596,7 +586,6 @@ class Jobs extends BaseController
             }
 
             $updateData['updatedAt'] = date('Y-m-d H:i:s');
-
             $jobModel->update($id, $updateData);
 
             if ($skillIds !== null) {
@@ -684,7 +673,6 @@ class Jobs extends BaseController
 
             (new \App\Models\JobSkill())->where('jobId', $id)->delete();
             (new \App\Models\JobDomain())->where('jobId', $id)->delete();
-
             $jobModel->delete($id);
 
             $db->transComplete();
@@ -697,7 +685,7 @@ class Jobs extends BaseController
 
             return $this->respond([
                 'success' => true,
-                'message' => 'Job deleted successfully'
+                'message' => 'Job deleted successfully',
             ]);
         } catch (\Exception $e) {
             log_message('error', 'Delete job error: ' . $e->getMessage());
@@ -706,7 +694,7 @@ class Jobs extends BaseController
     }
 
     // =========================================================
-    // GET MY JOBS (auth)
+    // GET MY JOBS (auth) — newApplicationCount & lastReviewedAt
     // =========================================================
     public function getMyJobs()
     {
@@ -716,7 +704,6 @@ class Jobs extends BaseController
                 return $this->fail('Unauthorized', 401);
 
             $jobModel = new Job();
-
             $userModel = new \App\Models\User();
             $userData = $userModel->select('role')->find($user->id);
             $role = $userData['role'] ?? null;
@@ -733,25 +720,66 @@ class Jobs extends BaseController
 
             $jobs = $jobModel->orderBy('createdAt', 'DESC')->findAll();
 
+            // ── Bulk-load read markers for all jobs in a single query ──
+            $jobIds = array_column($jobs, 'id');
+            $markerModel = new JobApplicationReadMarker();
+            $markers = $markerModel->getMarkersForUser($user->id, $jobIds);
+
+            // ── Build application counts per job in bulk ──
+            $db = \Config\Database::connect();
+
+            // Total counts per job (already stored in jobs.applicationCount but let's be safe)
+            $appTotalRows = [];
+            if (!empty($jobIds)) {
+                $rows = $db->table('applications')
+                    ->select('jobId, COUNT(*) as total')
+                    ->whereIn('jobId', $jobIds)
+                    ->groupBy('jobId')
+                    ->get()
+                    ->getResultArray();
+                foreach ($rows as $r) {
+                    $appTotalRows[$r['jobId']] = (int) $r['total'];
+                }
+            }
+
             $formattedJobs = [];
             foreach ($jobs as $job) {
-                $formattedJob = $job;
+                $jobId = $job['id'];
 
                 $companyModel = new \App\Models\Company();
-                $formattedJob['company'] = $companyModel->find($job['companyId']);
+                $job['company'] = $companyModel->find($job['companyId']);
 
                 if (!empty($job['categoryId'])) {
                     $categoryModel = new JobCategory();
-                    $formattedJob['category'] = $categoryModel->find($job['categoryId']);
+                    $job['category'] = $categoryModel->find($job['categoryId']);
                 } else {
-                    $formattedJob['category'] = null;
+                    $job['category'] = null;
                 }
 
-                $applicationModel = new \App\Models\Application();
-                $appCount = $applicationModel->where('jobId', $job['id'])->countAllResults();
-                $formattedJob['_count'] = ['applications' => $appCount];
+                $totalApps = $appTotalRows[$jobId] ?? 0;
+                $job['applicationCount'] = $totalApps;
+                $job['_count'] = ['applications' => $totalApps];
 
-                $formattedJobs[] = $formattedJob;
+                // ── Compute newApplicationCount ──
+                $marker = $markers[$jobId] ?? null;
+                $lastReviewedAt = $marker['lastReadAt'] ?? null;
+                $newApplicationCount = 0;
+
+                if ($lastReviewedAt) {
+                    // Count apps submitted AFTER last review
+                    $newApplicationCount = (int) $db->table('applications')
+                        ->where('jobId', $jobId)
+                        ->where('appliedAt >', $lastReviewedAt)
+                        ->countAllResults();
+                } else {
+                    // Never reviewed – all apps are "new"
+                    $newApplicationCount = $totalApps;
+                }
+
+                $job['newApplicationCount'] = $newApplicationCount;
+                $job['lastReviewedAt'] = $lastReviewedAt;
+
+                $formattedJobs[] = $job;
             }
 
             return $this->respond([
@@ -790,7 +818,7 @@ class Jobs extends BaseController
 
             $updateData = [
                 'status' => $newStatus,
-                'updatedAt' => date('Y-m-d H:i:s')
+                'updatedAt' => date('Y-m-d H:i:s'),
             ];
 
             if ($newStatus === 'CLOSED') {
@@ -879,19 +907,17 @@ class Jobs extends BaseController
 
             $formattedJobs = [];
             foreach ($jobs as $job) {
-                $formattedJob = $job;
-
                 $companyModel = new \App\Models\Company();
-                $formattedJob['company'] = $companyModel->select('id, name, logo, location')->find($job['companyId']);
+                $job['company'] = $companyModel->select('id, name, logo, location')->find($job['companyId']);
 
                 if (!empty($job['categoryId'])) {
                     $categoryModel = new JobCategory();
-                    $formattedJob['category'] = $categoryModel->find($job['categoryId']);
+                    $job['category'] = $categoryModel->find($job['categoryId']);
                 } else {
-                    $formattedJob['category'] = null;
+                    $job['category'] = null;
                 }
 
-                $formattedJobs[] = $formattedJob;
+                $formattedJobs[] = $job;
             }
 
             return $this->respond([
@@ -968,19 +994,17 @@ class Jobs extends BaseController
 
             $formattedJobs = [];
             foreach ($jobs as $job) {
-                $formattedJob = $job;
-
                 $companyModel = new \App\Models\Company();
-                $formattedJob['company'] = $companyModel->select('id, name, slug, logo, location, verified')->find($job['companyId']);
+                $job['company'] = $companyModel->select('id, name, slug, logo, location, verified')->find($job['companyId']);
 
                 if (!empty($job['categoryId'])) {
                     $categoryModel = new JobCategory();
-                    $formattedJob['category'] = $categoryModel->select('id, name, slug')->find($job['categoryId']);
+                    $job['category'] = $categoryModel->select('id, name, slug')->find($job['categoryId']);
                 } else {
-                    $formattedJob['category'] = null;
+                    $job['category'] = null;
                 }
 
-                $formattedJobs[] = $formattedJob;
+                $formattedJobs[] = $job;
             }
 
             return $this->respond([
@@ -1005,22 +1029,20 @@ class Jobs extends BaseController
 
             $formattedJobs = [];
             foreach ($jobs as $job) {
-                $formattedJob = $job;
-
                 $companyModel = new \App\Models\Company();
-                $formattedJob['company'] = $companyModel->select('id, name, logo')->find($job['companyId']);
+                $job['company'] = $companyModel->select('id, name, logo')->find($job['companyId']);
 
                 if (!empty($job['categoryId'])) {
                     $categoryModel = new JobCategory();
-                    $formattedJob['category'] = $categoryModel->find($job['categoryId']);
+                    $job['category'] = $categoryModel->find($job['categoryId']);
                 } else {
-                    $formattedJob['category'] = null;
+                    $job['category'] = null;
                 }
 
                 $userModel = new \App\Models\User();
-                $formattedJob['postedBy'] = $userModel->select('firstName, lastName, email')->find($job['postedById']);
+                $job['postedBy'] = $userModel->select('firstName, lastName, email')->find($job['postedById']);
 
-                $formattedJobs[] = $formattedJob;
+                $formattedJobs[] = $job;
             }
 
             return $this->respond([
@@ -1076,7 +1098,6 @@ class Jobs extends BaseController
             }
 
             $jobModel->update($id, $updateData);
-
             $updatedJob = $this->getJobWithRelations($id);
 
             if ($status === 'ACTIVE') {
@@ -1090,13 +1111,13 @@ class Jobs extends BaseController
 
             $this->logAudit($user->id, $status === 'ACTIVE' ? 'JOB_APPROVED' : 'JOB_REJECTED', 'Job', $id, [
                 'status' => $status,
-                'rejectionReason' => $data['rejectionReason'] ?? null
+                'rejectionReason' => $data['rejectionReason'] ?? null,
             ]);
 
             return $this->respond([
                 'success' => true,
                 'message' => 'Job ' . ($status === 'ACTIVE' ? 'approved' : 'rejected') . ' successfully',
-                'data' => $updatedJob
+                'data' => $updatedJob,
             ]);
         } catch (\Exception $e) {
             log_message('error', 'Moderate job error: ' . $e->getMessage());
