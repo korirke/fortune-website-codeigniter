@@ -1,5 +1,10 @@
 <?php
 
+/**
+ * NotificationService::createApplicationNotification() so that in-app
+ * notification records are written for the job poster + HR/admin users.
+ */
+
 namespace App\Controllers\Jobs;
 
 use App\Controllers\BaseController;
@@ -8,6 +13,7 @@ use App\Models\CandidateProfile;
 use App\Models\Application;
 use App\Models\Company;
 use App\Services\ProfileRequirementService;
+use App\Services\NotificationService;
 use App\Traits\NormalizedResponseTrait;
 
 class JobApplicationPipeline extends BaseController
@@ -219,6 +225,7 @@ class JobApplicationPipeline extends BaseController
 
             // 6) Emails AFTER commit (must never rollback persisted application)
             $this->sendApplicationEmails($applicationId, $job, $user->id, $profile, $data);
+            $this->triggerApplicationNotification($applicationId, $job, $user);
 
             return $this->respondCreated([
                 'success' => true,
@@ -234,6 +241,37 @@ class JobApplicationPipeline extends BaseController
                 'message' => 'Failed to submit application: ' . $e->getMessage(),
                 'data' => []
             ], 500);
+        }
+    }
+
+    // =========================================================
+    // PRIVATE: Trigger in-app notification 
+    // =========================================================
+    private function triggerApplicationNotification(string $applicationId, array $job, object $user): void
+    {
+        try {
+            $db = \Config\Database::connect();
+            $userRow = $db->table('users')
+                ->select('firstName, lastName')
+                ->where('id', $user->id)
+                ->get()
+                ->getRowArray();
+
+            $firstName = $userRow['firstName'] ?? '';
+            $lastName = $userRow['lastName'] ?? '';
+
+            $notifService = new NotificationService();
+            $notifService->createApplicationNotification(
+                $job['id'],
+                $applicationId,
+                $firstName,
+                $lastName,
+                $job['title'],
+                $job['companyId'],
+                $job['postedById']
+            );
+        } catch (\Throwable $e) {
+            log_message('error', '[JobApplicationPipeline] triggerApplicationNotification error: ' . $e->getMessage());
         }
     }
 
