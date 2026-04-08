@@ -594,6 +594,8 @@ $routes->get('public/(:any)', function ($filename) {
     throw \CodeIgniter\Exceptions\PageNotFoundException::forPageNotFound();
 });
 
+// Public settings (no auth)
+$routes->get('api/settings/public', 'Settings\SettingsController::getPublicSettings');
 
 // ── Settings ─────────────────────────────────────────────────────────────────
 $routes->group('api/settings', ['filter' => 'auth'], function ($routes) {
@@ -605,8 +607,6 @@ $routes->group('api/settings', ['filter' => 'auth'], function ($routes) {
     $routes->post('test-email', 'Settings\SettingsController::testEmailConfig');
 });
 
-// Public settings (no auth)
-$routes->get('api/settings/public', 'Settings\SettingsController::getPublicSettings');
 
 // ── Job Alerts ────────────────────────────────────────────────────────────────
 $routes->group('api/alerts', [
