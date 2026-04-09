@@ -5,6 +5,7 @@ namespace App\Controllers\Auth;
 use App\Controllers\BaseController;
 use App\Models\User;
 use App\Libraries\EmailHelper;
+use App\Libraries\TurnstileVerifier;
 use App\Models\CandidateProfile;
 use App\Traits\NormalizedResponseTrait;
 use Firebase\JWT\JWT;
@@ -29,14 +30,16 @@ class Auth extends BaseController
      *         required=true,
      *         @OA\JsonContent(
      *             required={"email", "password", "firstName", "lastName"},
-     *             @OA\Property(property="email", type="string", format="email", description="User email address", example="user@example.com"),
-     *             @OA\Property(property="password", type="string", description="User password (min 6 characters)", example="securepass123", minLength=6),
-     *             @OA\Property(property="firstName", type="string", description="User first name", example="John", minLength=2),
-     *             @OA\Property(property="lastName", type="string", description="User last name", example="Doe", minLength=2),
-     *             @OA\Property(property="role", type="string", enum={"CANDIDATE", "EMPLOYER"}, description="User role (optional, defaults to CANDIDATE)", example="CANDIDATE")
+     *             @OA\Property(property="email", type="string", format="email"),
+     *             @OA\Property(property="password", type="string", minLength=6),
+     *             @OA\Property(property="firstName", type="string", minLength=2),
+     *             @OA\Property(property="lastName", type="string", minLength=2),
+     *             @OA\Property(property="role", type="string", enum={"CANDIDATE", "EMPLOYER"}),
+     *             @OA\Property(property="turnstileToken", type="string", description="Cloudflare Turnstile verification token")
      *         )
      *     ),
      *     @OA\Response(response="201", description="Registration successful"),
+     *     @OA\Response(response="400", description="Turnstile verification failed"),
      *     @OA\Response(response="409", description="Email already exists"),
      *     @OA\Response(response="403", description="Cannot register with admin role")
      * )
@@ -49,6 +52,23 @@ class Auth extends BaseController
         // Validation
         if (!isset($data['email']) || !isset($data['password']) || !isset($data['firstName']) || !isset($data['lastName'])) {
             return $this->fail('Missing required fields', 400);
+        }
+
+        // ── Turnstile Verification 
+        $turnstile = new TurnstileVerifier();
+        if ($turnstile->isEnabled()) {
+            $turnstileToken = $data['turnstileToken'] ?? null;
+            $clientIp = $this->request->getIPAddress();
+
+            $verification = $turnstile->verify($turnstileToken, $clientIp);
+
+            if (!$verification['success']) {
+                log_message('warning', '[Register] Turnstile failed for ' . ($data['email'] ?? 'unknown') . ': ' . $verification['message']);
+                return $this->respond([
+                    'success' => false,
+                    'message' => $verification['message'],
+                ], 400);
+            }
         }
 
         // Check if email exists
@@ -74,13 +94,16 @@ class Auth extends BaseController
         $data['role'] = $data['role'] ?? 'CANDIDATE';
         $data['status'] = $data['status'] ?? 'PENDING_VERIFICATION';
         $data['emailVerified'] = false;
-        $data['emailNotifications']   = (int)($data['emailNotifications'] ?? 1);
-        $data['unsubscribeToken']     = bin2hex(random_bytes(16));
+        $data['emailNotifications'] = (int) ($data['emailNotifications'] ?? 1);
+        $data['unsubscribeToken'] = bin2hex(random_bytes(16));
 
         // Generate verification token
         $verificationToken = bin2hex(random_bytes(32));
         $data['resetPasswordToken'] = $verificationToken;
         $data['resetPasswordExpires'] = date('Y-m-d H:i:s', strtotime('+24 hours'));
+
+        // Remove turnstileToken before inserting (not a DB column)
+        unset($data['turnstileToken']);
 
         $userModel->insert($data);
 
@@ -123,17 +146,7 @@ class Auth extends BaseController
      * @OA\Post(
      *     path="/api/auth/login",
      *     tags={"Authentication"},
-     *     summary="User login (all roles)",
-     *     @OA\RequestBody(
-     *         required=true,
-     *         @OA\JsonContent(
-     *             required={"email", "password"},
-     *             @OA\Property(property="email", type="string", format="email", description="User email address", example="user@example.com"),
-     *             @OA\Property(property="password", type="string", description="User password", example="password123", minLength=6)
-     *         )
-     *     ),
-     *     @OA\Response(response="200", description="Login successful"),
-     *     @OA\Response(response="401", description="Invalid credentials")
+     *     summary="User login (all roles)"
      * )
      */
     public function login()
@@ -337,8 +350,7 @@ class Auth extends BaseController
                 log_message('debug', '[ForgotPassword] Reset email SENT successfully to: ' . $user['email']);
 
             } catch (\Exception $e) {
-                // LOG 4: Full error + trace
-                log_message('error', '[ForgotPassword] FAILED to send email to: ' . $user['email'] . ' | Error: ' . $e->getMessage() . ' | Trace: ' . $e->getTraceAsString());
+                log_message('error', '[ForgotPassword] FAILED: ' . $e->getMessage());
             }
         } else {
             // LOG 5: Email not found in DB
