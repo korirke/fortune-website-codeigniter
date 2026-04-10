@@ -117,11 +117,6 @@ class Backup extends BaseController
 
     /**
      * Download a backup file
-     *
-     * FIX: Was using hardcoded 'application/gzip' Content-Type for all files
-     * regardless of actual format (ZIP/tar/gz), and was loading entire file
-     * into memory with file_get_contents() which fails on large backups.
-     * Now: detects MIME from extension + streams in 8KB chunks.
      */
     public function download(string $id = null): ResponseInterface
     {
