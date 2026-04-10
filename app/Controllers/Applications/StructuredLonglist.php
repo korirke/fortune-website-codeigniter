@@ -1,21 +1,21 @@
 <?php
 
 /**
- * Description: Completely standalone controller for the "Structured Longlist"
- * feature. Provides two endpoints:
+ * Description: Controller for the "Structured Longlist" feature.
  *
- *   POST /api/applications/structured-longlist/generate
- *     Accepts { jobId, experienceColumns[], extraColumns[] } and returns
- *     the XLSX file directly as a download.  experienceColumns are the
- *     dynamic columns whose values are auto-searched against candidate
- *     education, certifications, courses and work-experience records.
- *     Default experience columns match the uploaded template:
- *       ["Diploma in Insurance","General Insurance experience 2-3 yrs"]
- *   POST /api/applications/structured-longlist/download
- *     Identical to /generate – provided as a semantic alias so the
- *     frontend can call either endpoint.
+ * POST /api/applications/structured-longlist/generate
+ *   Accepts { jobId, questionIds[] } and returns a professionally formatted
+ *   XLSX file as a browser download.
  *
- * A "Notes" column is always appended as the last column.
+ *   - Title row: centred, bold, uppercase job title
+ *   - Candidate numbering column (#)
+ *   - Questionnaire question columns with candidate answers auto-populated
+ *   - Clean dark-lined table layout
+ *   - "Notes" column always appended last
+ *   - Filename includes the job title for easy identification
+ *
+ * POST /api/applications/structured-longlist/download
+ *   Alias for /generate.
  */
 
 namespace App\Controllers\Applications;
@@ -24,7 +24,6 @@ use App\Controllers\BaseController;
 use App\Services\StructuredLonglistService;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
-use PhpOffice\PhpSpreadsheet\Style\Fill;
 use PhpOffice\PhpSpreadsheet\Style\Alignment;
 use PhpOffice\PhpSpreadsheet\Style\Border;
 
@@ -58,10 +57,12 @@ class StructuredLonglist extends BaseController
         if (!$user) {
             return null;
         }
+
         if (!in_array($user->role ?? '', ['EMPLOYER', 'HR_MANAGER'], true)) {
             return null;
         }
-        $profile = $this->getEmployerProfileByUserId($user->id); 
+
+        $profile = $this->getEmployerProfileByUserId($user->id);
         return $profile['companyId'] ?? null;
     }
 
@@ -102,9 +103,8 @@ class StructuredLonglist extends BaseController
      *
      * Body (JSON):
      * {
-     *   "jobId":              "abc123",                           // REQUIRED
-     *   "experienceColumns":  ["Diploma in Insurance", "…"],     // optional
-     *   "extraColumns":       ["Extra Field 1"]                  // optional
+     *   "jobId":       "abc123",
+     *   "questionIds": ["jqst_xxx", "jqst_yyy"]
      * }
      *
      * Returns: .xlsx binary download
@@ -141,94 +141,142 @@ class StructuredLonglist extends BaseController
                 }
             }
 
-            // ── Columns config ───────────────────────────────────────────
-            $experienceColumns = $body['experienceColumns'] ?? [];
-            $extraColumns      = $body['extraColumns']      ?? [];
-
-            // Ensure arrays
-            if (!is_array($experienceColumns)) {
-                $experienceColumns = [];
-            }
-            if (!is_array($extraColumns)) {
-                $extraColumns = [];
+            // ── Question IDs config ──────────────────────────────────────
+            $questionIds = $body['questionIds'] ?? [];
+            if (!is_array($questionIds)) {
+                $questionIds = [];
             }
 
             // ── Build data ───────────────────────────────────────────────
             $service = new StructuredLonglistService();
-            $result  = $service->build($jobId, $companyId, $experienceColumns, $extraColumns);
+            $result = $service->build($jobId, $companyId, $questionIds);
 
-            $headers  = $result['headers'];
+            $headers = $result['headers'];
             $dataRows = $result['rows'];
-            $title    = $result['title'];
+            $title = $result['title'];
+            $jobTitle = $result['jobTitle'];
+            $questions = $result['questions'] ?? [];
+
+            // Map question texts to their types for widths
+            $questionTypeMap = [];
+            foreach ($questions as $q) {
+                $questionTypeMap[$q['questionText']] = $q['type'] ?? 'OPEN_ENDED';
+            }
 
             // ── Build XLSX ───────────────────────────────────────────────
             $spreadsheet = new Spreadsheet();
-            $sheet       = $spreadsheet->getActiveSheet();
+            $sheet = $spreadsheet->getActiveSheet();
             $sheet->setTitle('Structured Longlist');
 
             if (empty($dataRows)) {
                 $sheet->setCellValue('A1', 'No applications found for this job');
-                $filename = 'structured_longlist_empty_' . date('Y-m-d_His') . '.xlsx';
+                $filename = $this->sanitizeFilename($jobTitle) . '_structured_longlist_empty_' . date('Y-m-d') . '.xlsx';
             } else {
                 $totalCols = count($headers);
-                $lastCol   = $this->columnLetter($totalCols - 1);
+                $lastCol = $this->columnLetter($totalCols - 1);
 
-                // ── ROW 1: Title (merged across all columns) ─────────────
+                // ──────────────────────────────────────────────────────────
+                // ROW 1: Title
+                // ──────────────────────────────────────────────────────────
                 $sheet->setCellValue('A1', $title);
                 $sheet->mergeCells("A1:{$lastCol}1");
-                $sheet->getStyle('A1')->getFont()->setBold(true)->setSize(16);
-                $sheet->getStyle('A1')->getAlignment()
-                    ->setHorizontal(Alignment::HORIZONTAL_LEFT)
-                    ->setVertical(Alignment::VERTICAL_CENTER);
-                $sheet->getRowDimension(1)->setRowHeight(24);
+                $sheet->getStyle("A1:{$lastCol}1")->applyFromArray([
+                    'font' => [
+                        'bold' => true,
+                        'size' => 16,
+                    ],
+                    'alignment' => [
+                        'horizontal' => Alignment::HORIZONTAL_CENTER,
+                        'vertical' => Alignment::VERTICAL_CENTER,
+                    ],
+                    'borders' => [
+                        'allBorders' => [
+                            'borderStyle' => Border::BORDER_MEDIUM,
+                        ],
+                    ],
+                ]);
+                $sheet->getRowDimension(1)->setRowHeight(32);
 
-                // ── ROW 2: Headers ───────────────────────────────────────
+                // ──────────────────────────────────────────────────────────
+                // ROW 2: Headers
+                // ──────────────────────────────────────────────────────────
                 for ($i = 0; $i < $totalCols; $i++) {
                     $cellRef = $this->columnLetter($i) . '2';
-                    $sheet->setCellValue($cellRef, $headers[$i]);
+                    $label = $headers[$i];
+                    $sheet->setCellValue($cellRef, $label);
 
-                    $sheet->getStyle($cellRef)->getFont()->setBold(true)->setSize(11);
-                    $sheet->getStyle($cellRef)->getAlignment()
-                        ->setHorizontal(Alignment::HORIZONTAL_CENTER)
-                        ->setVertical(Alignment::VERTICAL_CENTER)
-                        ->setWrapText(true);
-                    $sheet->getStyle($cellRef)->getBorders()->getAllBorders()
-                        ->setBorderStyle(Border::BORDER_THIN);
+                    $sheet->getStyle($cellRef)->applyFromArray([
+                        'font' => [
+                            'bold' => true,
+                            'size' => 11,
+                        ],
+                        'alignment' => [
+                            'horizontal' => Alignment::HORIZONTAL_CENTER,
+                            'vertical' => Alignment::VERTICAL_CENTER,
+                            'wrapText' => true,
+                        ],
+                        'borders' => [
+                            'allBorders' => [
+                                'borderStyle' => Border::BORDER_MEDIUM,
+                            ],
+                        ],
+                    ]);
                 }
                 $sheet->getRowDimension(2)->setRowHeight(42);
 
-                // ── ROW 3+: Data rows ────────────────────────────────────
+                // ──────────────────────────────────────────────────────────
+                // ROW 3+: Data rows
+                // ──────────────────────────────────────────────────────────
                 $rowNum = 3;
                 foreach ($dataRows as $row) {
                     for ($c = 0; $c < $totalCols; $c++) {
                         $cellRef = $this->columnLetter($c) . $rowNum;
-                        $value   = $row[$c] ?? '';
+                        $value = $row[$c] ?? '';
                         $sheet->setCellValue($cellRef, $value);
 
-                        $sheet->getStyle($cellRef)->getFont()->setSize(11);
-                        $sheet->getStyle($cellRef)->getBorders()->getAllBorders()
-                            ->setBorderStyle(Border::BORDER_THIN);
+                        $style = [
+                            'font' => [
+                                'size' => 11,
+                            ],
+                            'borders' => [
+                                'allBorders' => [
+                                    'borderStyle' => Border::BORDER_THIN,
+                                ],
+                            ],
+                            'alignment' => [
+                                'vertical' => Alignment::VERTICAL_CENTER,
+                                'wrapText' => true,
+                            ],
+                        ];
 
-                        if (strlen($value) > 30) {
-                            $sheet->getStyle($cellRef)->getAlignment()->setWrapText(true);
+                        // Centre-align the # column
+                        if ($c === 0) {
+                            $style['alignment']['horizontal'] = Alignment::HORIZONTAL_CENTER;
+                            $style['font']['bold'] = true;
                         }
+
+                        $sheet->getStyle($cellRef)->applyFromArray($style);
                     }
-                    $sheet->getRowDimension($rowNum)->setRowHeight(16.5);
+
+                    $sheet->getRowDimension($rowNum)->setRowHeight(36);
                     $rowNum++;
                 }
 
                 // ── Column widths ────────────────────────────────────────
-                $this->applyColumnWidths($sheet, $headers);
+                $this->applyColumnWidths($sheet, $headers, $questionTypeMap);
 
                 // ── Freeze pane below headers ────────────────────────────
                 $sheet->freezePane('A3');
 
-                $filename = 'structured_longlist_' . date('Y-m-d_His') . '.xlsx';
+                // ── Auto-filter on header row ────────────────────────────
+                $sheet->setAutoFilter("A2:{$lastCol}2");
+
+                $filename = $this->sanitizeFilename($jobTitle) . '_structured_longlist_' . date('Y-m-d') . '.xlsx';
             }
 
             // ── Write to stream and return ───────────────────────────────
             $writer = new Xlsx($spreadsheet);
-            $tmp    = fopen('php://temp', 'w+b');
+            $tmp = fopen('php://temp', 'w+b');
             $writer->save($tmp);
             rewind($tmp);
             $binary = stream_get_contents($tmp);
@@ -247,7 +295,7 @@ class StructuredLonglist extends BaseController
             return $this->respond([
                 'success' => false,
                 'message' => 'Failed to generate structured longlist',
-                'error'   => $e->getMessage(),
+                'error' => $e->getMessage(),
             ], 500);
         }
     }
@@ -272,7 +320,7 @@ class StructuredLonglist extends BaseController
         $letter = '';
         while ($index >= 0) {
             $letter = chr(65 + ($index % 26)) . $letter;
-            $index  = intdiv($index, 26) - 1;
+            $index = intdiv($index, 26) - 1;
         }
         return $letter;
     }
@@ -280,23 +328,42 @@ class StructuredLonglist extends BaseController
     /**
      * Set sensible default widths per known column label.
      */
-    private function applyColumnWidths($sheet, array $headers): void
+    private function applyColumnWidths($sheet, array $headers, array $questionTypeMap): void
     {
         $defaultWidths = [
-            'Candidate'        => 25,
-            'Qualification'    => 45,
-            'Email'            => 35,
-            'Graduation year'  => 14,
-            'Contacts'         => 18,
-            'Expected salary'  => 18,
-            'Notes'            => 20,
+            '#' => 5,
+            'Candidate' => 28,
+            'Qualification' => 45,
+            'Email' => 35,
+            'Graduation Year' => 14,
+            'Contacts' => 18,
+            'Expected Salary' => 18,
+            'Notes' => 22,
         ];
 
         for ($i = 0; $i < count($headers); $i++) {
-            $col   = $this->columnLetter($i);
+            $col = $this->columnLetter($i);
             $label = $headers[$i];
-            $width = $defaultWidths[$label] ?? 22; // dynamic/extra columns default 22
+
+            if (isset($defaultWidths[$label])) {
+                $width = $defaultWidths[$label];
+            } elseif (isset($questionTypeMap[$label])) {
+                $width = ($questionTypeMap[$label] === 'YES_NO') ? 14 : 30;
+            } else {
+                $width = 22;
+            }
+
             $sheet->getColumnDimension($col)->setWidth($width);
         }
+    }
+
+    /**
+     * Sanitize a string for use in a filename.
+     */
+    private function sanitizeFilename(string $name): string
+    {
+        $clean = preg_replace('/[^a-zA-Z0-9_\- ]/', '', $name);
+        $clean = preg_replace('/\s+/', '_', trim($clean));
+        return strtolower($clean) ?: 'longlist';
     }
 }
