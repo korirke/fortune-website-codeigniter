@@ -5,6 +5,7 @@ namespace App\Controllers\Contact;
 use App\Controllers\BaseController;
 use App\Models\ContactInquiry;
 use App\Libraries\EmailHelper;
+use App\Libraries\TurnstileVerifier;
 use App\Traits\NormalizedResponseTrait;
 
 /**
@@ -21,37 +22,58 @@ class Contact extends BaseController
      * @OA\Post(
      *     path="/api/contact/submit",
      *     tags={"Contact"},
-     *     summary="Submit contact form",
+     *     summary="Submit contact form (with Turnstile verification)",
      *     @OA\RequestBody(
      *         required=true,
      *         @OA\JsonContent(
-     *             required={"name", "email", "phone", "service", "message"},
-     *             @OA\Property(property="name", type="string", description="Contact name", example="John Doe"),
-     *             @OA\Property(property="email", type="string", format="email", description="Contact email", example="john@example.com"),
-     *             @OA\Property(property="phone", type="string", description="Contact phone number", example="+1234567890"),
-     *             @OA\Property(property="company", type="string", description="Company name (optional)", example="Acme Corp"),
-     *             @OA\Property(property="service", type="string", description="Service interested in", example="Payroll Management"),
-     *             @OA\Property(property="message", type="string", description="Message", example="I would like to know more about your services..."),
-     *             @OA\Property(property="source", type="string", description="Source of contact (optional)", example="website"),
-     *             @OA\Property(property="metadata", type="object", description="Additional metadata (optional)")
+     *             @OA\Property(property="inquiry", type="string"),
+     *             @OA\Property(property="firstName", type="string"),
+     *             @OA\Property(property="lastName", type="string"),
+     *             @OA\Property(property="email", type="string", format="email"),
+     *             @OA\Property(property="message", type="string"),
+     *             @OA\Property(property="source", type="string", enum={"website","careers_portal","recruitment_portal"}),
+     *             @OA\Property(property="turnstileToken", type="string", description="Cloudflare Turnstile token")
      *         )
      *     ),
-     *     @OA\Response(response="201", description="Contact submitted successfully")
+     *     @OA\Response(response="201", description="Contact submitted successfully"),
+     *     @OA\Response(response="400", description="Turnstile verification failed")
      * )
      */
     public function submitContact()
     {
         $data = $this->request->getJSON(true);
+
+        // ── Turnstile Verification
+        $turnstile = new TurnstileVerifier();
+        if ($turnstile->isEnabled()) {
+            $turnstileToken = $data['turnstileToken'] ?? null;
+            $clientIp = $this->request->getIPAddress();
+
+            $verification = $turnstile->verify($turnstileToken, $clientIp);
+
+            if (!$verification['success']) {
+                log_message('warning', '[ContactSubmit] Turnstile failed for ' . ($data['email'] ?? 'unknown') . ': ' . $verification['message']);
+                return $this->respond([
+                    'success' => false,
+                    'message' => $verification['message'],
+                ], 400);
+            }
+        }
+
         $inquiryModel = new ContactInquiry();
-        
+
         $data['id'] = uniqid('inquiry_');
         $data['status'] = 'pending';
-        
+        $data['source'] = $data['source'] ?? 'website';
+
         // Convert metadata to JSON if it's an array/object
         if (isset($data['metadata']) && (is_array($data['metadata']) || is_object($data['metadata']))) {
             $data['metadata'] = json_encode($data['metadata']);
         }
-        
+
+        // Remove turnstileToken before insert (not a DB column)
+        unset($data['turnstileToken']);
+
         $inquiryModel->insert($data);
 
         // Notify admin about new contact submission (non-blocking)
@@ -65,7 +87,10 @@ class Contact extends BaseController
         return $this->respondCreated([
             'success' => true,
             'message' => 'Your message has been sent successfully',
-            'data' => ['id' => $data['id']]
+            'data' => [
+                'id' => $data['id'],
+                'submittedAt' => date('Y-m-d\TH:i:s.000\Z'),
+            ]
         ]);
     }
 
@@ -73,11 +98,13 @@ class Contact extends BaseController
      * @OA\Get(
      *     path="/api/contact",
      *     tags={"Contact"},
-     *     summary="Get all contact inquiries",
+     *     summary="Get all contact inquiries (supports source filtering)",
      *     security={{"bearerAuth":{}}},
-     *     @OA\Parameter(name="status", in="query", required=false, @OA\Schema(type="string", enum={"pending", "resolved", "archived"}), description="Filter by status"),
-     *     @OA\Parameter(name="page", in="query", required=false, @OA\Schema(type="integer"), description="Page number", example=1),
-     *     @OA\Parameter(name="limit", in="query", required=false, @OA\Schema(type="integer"), description="Items per page", example=10),
+     *     @OA\Parameter(name="status", in="query", required=false, @OA\Schema(type="string")),
+     *     @OA\Parameter(name="source", in="query", required=false, @OA\Schema(type="string")),
+     *     @OA\Parameter(name="search", in="query", required=false, @OA\Schema(type="string")),
+     *     @OA\Parameter(name="page", in="query", required=false, @OA\Schema(type="integer")),
+     *     @OA\Parameter(name="limit", in="query", required=false, @OA\Schema(type="integer")),
      *     @OA\Response(response="200", description="Inquiries retrieved successfully")
      * )
      */
@@ -85,19 +112,26 @@ class Contact extends BaseController
     {
         try {
             $inquiryModel = new ContactInquiry();
-            
+
             // Get pagination parameters
             $page = (int) ($this->request->getGet('page') ?? 1);
             $limit = (int) ($this->request->getGet('limit') ?? 20);
             $skip = ($page - 1) * $limit;
-            
+
             // Get filters
             $status = $this->request->getGet('status');
+            $source = $this->request->getGet('source');
             $search = $this->request->getGet('search');
-            
+
             if ($status) {
                 $inquiryModel->where('status', $status);
             }
+
+            // Source filter for distinguishing website vs careers portal inquiries
+            if ($source) {
+                $inquiryModel->where('source', $source);
+            }
+
             if ($search) {
                 $inquiryModel->groupStart()
                     ->like('firstName', $search)
@@ -107,16 +141,15 @@ class Contact extends BaseController
                     ->orLike('message', $search)
                     ->groupEnd();
             }
-            
+
             // Get total count
             $total = $inquiryModel->countAllResults(false);
-            
+
             // Get paginated results
             $inquiries = $inquiryModel
                 ->orderBy('createdAt', 'DESC')
                 ->findAll($limit, $skip);
-            
-            // Node.js returns { success: true, message: "...", data: { items: [...], pagination: {...} } }
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Contact inquiries retrieved successfully',
@@ -144,30 +177,26 @@ class Contact extends BaseController
      *     path="/api/contact/stats",
      *     tags={"Contact"},
      *     summary="Get contact statistics",
-     *     security={{"bearerAuth":{}}},
-     *     @OA\Response(response="200", description="Stats retrieved successfully")
+     *     security={{"bearerAuth":{}}}
      * )
      */
     public function getStats()
     {
         try {
             $inquiryModel = new ContactInquiry();
-            
-            // Get all stats matching Node.js structure
+
             $total = $inquiryModel->countAllResults(false);
             $pending = $inquiryModel->where('status', 'pending')->countAllResults(false);
             $inProgress = $inquiryModel->where('status', 'in_progress')->countAllResults(false);
             $resolved = $inquiryModel->where('status', 'resolved')->countAllResults(false);
             $closed = $inquiryModel->where('status', 'closed')->countAllResults(false);
-            
-            // Get recent inquiries (last 5)
+
             $recent = $inquiryModel
                 ->orderBy('createdAt', 'DESC')
                 ->limit(5)
                 ->findAll();
-            
-            // Format recent to match Node.js (only specific fields)
-            $recentFormatted = array_map(function($inq) {
+
+            $recentFormatted = array_map(function ($inq) {
                 return [
                     'id' => $inq['id'],
                     'firstName' => $inq['firstName'] ?? null,
@@ -175,10 +204,11 @@ class Contact extends BaseController
                     'email' => $inq['email'],
                     'inquiry' => $inq['inquiry'] ?? null,
                     'status' => $inq['status'],
+                    'source' => $inq['source'] ?? 'website',
                     'createdAt' => $inq['createdAt'],
                 ];
             }, $recent);
-            
+
             return $this->respond([
                 'success' => true,
                 'message' => 'Contact stats retrieved successfully',
@@ -248,14 +278,12 @@ class Contact extends BaseController
         try {
             $data = $this->request->getJSON(true);
             $inquiryModel = new ContactInquiry();
-            
-            // Check if inquiry exists
+
             $inquiry = $inquiryModel->find($id);
             if (!$inquiry) {
                 return $this->failNotFound('Inquiry not found');
             }
-            
-            // Update only allowed fields
+
             $updateData = [];
             if (isset($data['status'])) {
                 $updateData['status'] = $data['status'];
@@ -263,10 +291,9 @@ class Contact extends BaseController
             if (isset($data['notes'])) {
                 $updateData['notes'] = $data['notes'];
             }
-            
+
             $inquiryModel->update($id, $updateData);
-            
-            // Get updated inquiry
+
             $updatedInquiry = $inquiryModel->find($id);
 
             return $this->respond([
