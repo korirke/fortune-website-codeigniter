@@ -20,10 +20,11 @@ class ContactInquiry extends Model
         'email',
         'message',
         'status',
+        'source',
         'notes',
         'metadata',
         'createdAt',
-        'updatedAt'
+        'updatedAt',
     ];
 
     protected $useTimestamps = false;
